@@ -10073,38 +10073,85 @@ return jQuery;
 
 	// Select a period by dragging the mouse over a timeframe.
 	var drag_timeframe = function() {
-		return;
+		var box;
+		var setpos = function(e) {
+			// The +1 is to ensure the tooltip is always visible without a yanky
+			// effect.
+			if (e.pageX > parseFloat(box.css('left'))) {
+				//if (shrinking)
+					box.css('right', $(document.body).width() - e.pageX + 1);
+				//else
+				//	box.css('left', e.pageX);
+			}
+			else {
+				box.css('left', e.pageX + 1);
+			}
+		};
 
-		/*
-		var down, box;
 		$('.chart').on('mousedown', function(e) {
-			down = e;
+			if (e.button !== 0)  // Left mouse button.
+				return;
+
 			box = $('<span id="drag-box"></span>').css({
-				left: e.pageX,
-				top: e.pageY,
+				left:   e.pageX,
+				right:  $(document.body).width() - e.pageX,
+				top:    $(this).offset().top,
+				height: $(this).outerHeight(),
+			}).on('mousemove', function(e) {
+				e.preventDefault();
+				setpos(e);
 			});
-			$(this).append(box);
+
+			// Mainly for Firefox.
+			$(document).on('dragstart.timeframe, selectstart.timeframe', function(e) {
+				e.preventDefault();
+			});
+
+			$(document.body).append(box);
 		});
 
 		$('.chart').on('mousemove', function(e) {
 			e.preventDefault();
+			if (!box)
+				return;
+			setpos(e);
+		});
 
-			if (!down)
+		$(document.body).on('mouseup', function(e) {
+			if (!box)
 				return;
 
-			box.css({
-				width: e.pageX,
-				height: e.pageY,
+			e.preventDefault();
+
+			var start, end;
+			var box_left = parseFloat(box.css('left')),
+				box_right = $('.chart').offset().left + $('.chart').width() - parseFloat(box.css('right'));
+
+			// console.log($('.chart').offset().left,  $('.chart').width())
+			// console.log(parseFloat(box.css('right')));
+
+			$('.chart').first().find('>div').each(function(i, elem) {
+				var l = $(elem).offset().left,
+					w = $(elem).width();
+
+				// Moving mouse left.
+				if (!start && l + w >= box_left)
+					start = elem;
+
+				// Moving mouse right.
+				if (start && !end && l >= box_right)
+					end = elem;
 			});
-		});
 
-		$('.chart').on('mouseup', function(e) {
-			if (!down)
-				return;
+			box.remove();
+			box = null;
+			$(document).off('.timeframe');
 
-			down = null;
+			$('#period-start').val((start.title || start.dataset.title).split(' ')[0]);
+			$('#period-end').val((end.title || end.dataset.title).split(' ')[0]);
+			console.log(end);
+			// $('#period-form').trigger('submit');
 		});
-		*/
 	};
 
 	// Get all query parameters as an object.
@@ -10151,7 +10198,6 @@ return jQuery;
 				link = this,
 				row = $(this).closest('tr'),
 				path = row.attr('id');
-
 
 			var close = function() {
 				var t = $(document.getElementById(params['showrefs']));
@@ -10651,11 +10697,9 @@ h3 + p { margin-top: 0; }
 
 #drag-box {
 	position: absolute;
-	background-color: red;
-	border: 1px solid blue;
 
-	min-width: 4px;
-	min-height: 4px;
+	background-color: #99f;
+	opacity: .5;
 }
 
 .hide        { display: none; }
@@ -11042,7 +11086,7 @@ callback is <code>null</code>.</p>
 {{if and .Site.Settings.Public (not .User.ID)}}<div class="flash flash-i"><p>Note: public view is updated once an hour. Sign in to get real-time statistics.</p></div>{{end}}
 
 <div class="count-list-opt">
-	<form>
+	<form id="period-form">
 		{{/* The first button gets used on the enter key, AFAICT there is no way to change that. */}}
 		<button type="submit" class="hide"></button>
 
