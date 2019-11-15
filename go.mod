@@ -2,6 +2,8 @@ module zgo.at/goatcounter
 
 go 1.13
 
+// replace zgo.at/zstripe => ../zstripe
+
 require (
 	github.com/arp242/geoip2-golang v1.4.0
 	github.com/fsnotify/fsnotify v1.4.7 // indirect
@@ -19,6 +21,7 @@ require (
 	zgo.at/zhttp v0.0.0-20191122070009-2fc615a2d005
 	zgo.at/zlog v1.0.6
 	zgo.at/zpack v0.0.0-20191110113459-aab2cde4af0f
+	zgo.at/zstripe v0.0.0-20191124072916-583f8f334de5
 	zgo.at/ztest v0.0.0-20191108073241-44bac275c1ec
 	zgo.at/zvalidate v0.0.0-20191108080924-899e27aee0d1
 )

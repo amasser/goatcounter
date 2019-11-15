@@ -11328,6 +11328,15 @@ callback is <code>null</code>.</p>
 
 {{template "_backend_bottom.gohtml" .}}
 `),
+	"tpl/billing.gohtml": []byte(`{{template "_backend_top.gohtml" .}}
+
+<h1>Billing</h1>
+...
+
+
+{{template "_backend_bottom.gohtml" .}}
+
+`),
 	"tpl/error.gohtml": []byte(`<!DOCTYPE html>
 <html lang="en">
 <head>

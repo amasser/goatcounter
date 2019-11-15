@@ -24,6 +24,7 @@ import (
 	"zgo.at/zhttp"
 	"zgo.at/zhttp/zmail"
 	"zgo.at/zlog"
+	"zgo.at/zstripe"
 )
 
 var version = "dev"
@@ -34,6 +35,7 @@ func main() {
 		cfg.Version = version
 	}
 	zmail.SMTP = cfg.SMTP
+	zstripe.SecretKey = cfg.StripeKey
 	fmt.Printf("Goatcounter version %s\n", version)
 	cfg.Print()
 
