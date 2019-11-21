@@ -275,7 +275,7 @@ type hs struct {
 
 type HitStats []hs
 
-func (h *HitStats) List(ctx context.Context, start, end time.Time, exclude []string) (int, int, bool, error) {
+func (h *HitStats) List(ctx context.Context, start, end time.Time, filter string, exclude []string) (int, int, bool, error) {
 	db := zdb.MustGet(ctx)
 	site := MustGetSite(ctx)
 
@@ -301,7 +301,11 @@ func (h *HitStats) List(ctx context.Context, start, end time.Time, exclude []str
 			created_at <= ?`
 	args := []interface{}{site.ID, dayStart(start), dayEnd(end)}
 
-	// Quite a bit faster to not check path.
+	// Quite a bit faster to not check path, so only do it if needed.
+	if filter != "" {
+		args = append(args, filter)
+		query += ` and lower(path) like lower(?) `
+	}
 	if len(exclude) > 0 {
 		args = append(args, exclude)
 		query += ` and path not in (?) `
@@ -382,17 +386,22 @@ func (h *HitStats) List(ctx context.Context, start, end time.Time, exclude []str
 	l = l.Since("reorder data")
 
 	// Get total.
-	total := 0
-	err = db.GetContext(ctx, &total, `
+	query = `
 		select count(path)
 		from hits
 		where
 			site=$1 and
 			created_at >= $2 and
-			created_at <= $3`,
-		site.ID, dayStart(start), dayEnd(end))
-
+			created_at <= $3`
+	args = []interface{}{site.ID, dayStart(start), dayEnd(end)}
+	if filter != "" {
+		args = append(args, filter)
+		query += ` and lower(path) like lower($4) `
+	}
+	total := 0
+	err = db.GetContext(ctx, &total, query, args...)
 	l = l.Since("get total")
+
 	return total, totalDisplay, more, errors.Wrap(err, "HitStats.List")
 }
 

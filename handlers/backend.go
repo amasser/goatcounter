@@ -219,7 +219,8 @@ func (h backend) index(w http.ResponseWriter, r *http.Request) error {
 	l := zlog.Module("backend").Field("site", site.ID)
 
 	var pages goatcounter.HitStats
-	total, totalDisplay, _, err := pages.List(r.Context(), start, end, nil)
+	total, totalDisplay, _, err := pages.List(r.Context(), start, end,
+		r.URL.Query().Get("filter"), nil)
 	if err != nil {
 		return err
 	}
@@ -431,7 +432,7 @@ func (h backend) pages(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	var pages goatcounter.HitStats
-	_, totalDisplay, more, err := pages.List(r.Context(), start, end,
+	_, totalDisplay, more, err := pages.List(r.Context(), start, end, "",
 		strings.Split(r.URL.Query().Get("exclude"), ","))
 	if err != nil {
 		return err
