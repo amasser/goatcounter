@@ -6,11 +6,16 @@
 (function() { 
 	'use strict';
 
-	var vars = window.vars || {};
+	var vars = {};
+	if (window.goatcounter)
+		vars = window.goatcounter.vars || {};
 
 	// Find canonical location of the current page.
-	var get_location = function() {
-		var results = {p: vars.path, r: vars.referrer};
+	var get_location = function(count_vars) {
+		var results = {
+			p: count_vars.path || vars.path,
+			r: count_vars.referrer || vars.referrer,
+		};
 
 		var rcb, pcb;
 		if (typeof(results.r) === 'function')
@@ -53,7 +58,7 @@
 	};
 
 	// Count a hit.
-	var count = function() {
+	var count = function(count_vars) {
 		// Don't track pages fetched with the browser's prefetch algorithm.
 		// See https://github.com/usefathom/fathom/issues/13
 		if ('visibilityState' in document && document.visibilityState === 'prerender')
@@ -64,7 +69,7 @@
 			window.location.hostname.match(/^(127\.|10\.|172\.16\.|192\.168\.)/))
 				return;
 
-		var loc = get_location();
+		var loc = get_location(count_vars);
 		loc.s = [window.screen.width, window.screen.height, (window.devicePixelRatio || 1)];
 
 		// null returned from user callback.
@@ -91,8 +96,15 @@
 		document.body.appendChild(img);  
 	};
 
-	if (document.body === null)
-		document.addEventListener('DOMContentLoaded', function() { count(); }, false);
-	else
-		count();
+	// Expose public API.
+	if (!window.goatcounter)
+		window.goatcounter = {};
+	window.goatcounter.count = count;
+
+	if (!vars.no_onload) {
+		if (document.body === null)
+			document.addEventListener('DOMContentLoaded', function() { count(); }, false);
+		else
+			count();
+	}
 })();
