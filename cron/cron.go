@@ -1,6 +1,6 @@
-// Copyright © 2019 Martin Tournoij <martin@arp242.net>
-// This file is part of GoatCounter and published under the terms of the AGPLv3,
-// which can be found in the LICENSE file or at gnu.org/licenses/agpl.html
+// Copyright © 2019 Martin Tournoij – This file is part of GoatCounter and
+// published under the terms of a slightly modified EUPL v1.2 license, which can
+// be found in the LICENSE file or at https://license.goatcounter.com
 
 // Package cron schedules jobs.
 package cron
@@ -10,12 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jmoiron/sqlx"
-	"github.com/pkg/errors"
 	"zgo.at/goatcounter"
-	"zgo.at/utils/syncutil"
 	"zgo.at/zdb"
 	"zgo.at/zlog"
+	"zgo.at/zstd/zsync"
 )
 
 type task struct {
@@ -25,24 +23,37 @@ type task struct {
 
 var tasks = []task{
 	{persistAndStat, 10 * time.Second},
+	{DataRetention, 1 * time.Hour},
+	{renewACME, 2 * time.Hour},
+	{vacuumDeleted, 12 * time.Hour},
+	{goatcounter.Salts.Refresh, 1 * time.Hour},
+	{clearSessions, 1 * time.Minute},
+	{oldExports, 1 * time.Hour},
 }
 
-var stopped = syncutil.NewAtomicInt(0)
+var (
+	stopped = zsync.NewAtomicInt(0)
+	wg      sync.WaitGroup
+)
 
-var wg sync.WaitGroup
-
-// Run stat updates in the background.
-func Run(db *sqlx.DB) {
+// RunOnce runs all tasks once and returns.
+func RunOnce(db zdb.DB) {
 	ctx := zdb.With(context.Background(), db)
 	l := zlog.Module("cron")
-
 	for _, t := range tasks {
-		// Run everything on startup immediately.
 		err := t.fun(ctx)
 		if err != nil {
 			l.Error(err)
 		}
+	}
+}
 
+// RunBackground runs tasks in the background according to the given schedule.
+func RunBackground(db zdb.DB) {
+	ctx := zdb.With(context.Background(), db)
+	l := zlog.Module("cron")
+
+	for _, t := range tasks {
 		go func(t task) {
 			defer zlog.Recover()
 
@@ -68,7 +79,7 @@ func Run(db *sqlx.DB) {
 
 // Wait for all running tasks to finish and then run all tasks for consistency
 // on shutdown.
-func Wait(db *sqlx.DB) {
+func Wait(db zdb.DB) {
 	stopped.Set(1)
 	ctx := zdb.With(context.Background(), db)
 
@@ -80,58 +91,4 @@ func Wait(db *sqlx.DB) {
 			zlog.Module("cron").Error(err)
 		}
 	}
-}
-
-func persistAndStat(ctx context.Context) error {
-	l := zlog.Module("cron")
-
-	hl := goatcounter.Memstore.Len()
-	err := goatcounter.Memstore.Persist(ctx)
-	if err != nil {
-		return err
-	}
-	l = l.Since("memstore")
-
-	err = updateStats(ctx)
-	if hl > 0 {
-		l.Since("stats").FieldsSince().Printf("persisted %d hits", hl)
-	}
-	return err
-}
-
-// Regen all stats:
-// delete from hit_stats; delete from browser_stats; delete from location_stats; update sites set last_stat=null;
-func updateStats(ctx context.Context) error {
-	var sites goatcounter.Sites
-	err := sites.List(ctx)
-	if err != nil {
-		return err
-	}
-
-	for _, s := range sites {
-		start := time.Now().UTC().Format("2006-01-02 15:04:05")
-
-		err := updateHitStats(ctx, s)
-		if err != nil {
-			return errors.Wrapf(err, "hit_stat: site %d", s.ID)
-		}
-
-		err = updateBrowserStats(ctx, s)
-		if err != nil {
-			return errors.Wrapf(err, "browser_stat: site %d", s.ID)
-		}
-
-		err = updateLocationStats(ctx, s)
-		if err != nil {
-			return errors.Wrapf(err, "location_stat: site %d", s.ID)
-		}
-
-		// Record last update.
-		_, err = zdb.MustGet(ctx).ExecContext(ctx,
-			`update sites set last_stat=$1 where id=$2`, start, s.ID)
-		if err != nil {
-			return errors.Wrapf(err, "update last_stat: site %d", s.ID)
-		}
-	}
-	return nil
 }

@@ -1,6 +1,6 @@
-// Copyright © 2019 Martin Tournoij <martin@arp242.net>
-// This file is part of GoatCounter and published under the terms of the AGPLv3,
-// which can be found in the LICENSE file or at gnu.org/licenses/agpl.html
+// Copyright © 2019 Martin Tournoij – This file is part of GoatCounter and
+// published under the terms of a slightly modified EUPL v1.2 license, which can
+// be found in the LICENSE file or at https://license.goatcounter.com
 
 package handlers
 
@@ -12,25 +12,28 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi"
-	"github.com/jmoiron/sqlx"
+	"zgo.at/blackmail"
 	"zgo.at/goatcounter"
-	"zgo.at/utils/jsonutil"
+	"zgo.at/goatcounter/cfg"
+	"zgo.at/goatcounter/gctest"
+	"zgo.at/goatcounter/pack"
 	"zgo.at/zdb"
 	"zgo.at/zhttp"
-	"zgo.at/zhttp/ctxkey"
-	"zgo.at/zhttp/zmail"
 	"zgo.at/zlog"
+	"zgo.at/zstd/zjson"
+	"zgo.at/zstd/zstring"
 	"zgo.at/ztest"
 )
 
 type handlerTest struct {
 	name         string
-	setup        func(context.Context)
-	router       func(*sqlx.DB) chi.Router
+	setup        func(context.Context, *testing.T)
+	router       func(zdb.DB) chi.Router
 	path         string
 	method       string
 	auth         bool
@@ -42,10 +45,21 @@ type handlerTest struct {
 }
 
 func init() {
+	blackmail.DefaultMailer = blackmail.NewMailer(blackmail.ConnectWriter,
+		blackmail.MailerOut(new(bytes.Buffer)))
+
 	zhttp.TplPath = "../tpl"
+	pack.Templates = nil
+	pack.Public = nil
 	zhttp.InitTpl(nil)
-	zlog.Config.Outputs = []zlog.OutputFunc{} // Don't care about logs; don't spam.
-	zmail.Print = false
+	ztest.DefaultHost = "test.example.com"
+	cfg.Domain = "example.com"
+	cfg.GoatcounterCom = true
+	if zstring.Contains(os.Args, "-test.v=true") {
+		zlog.Config.Debug = []string{"all"}
+	} else {
+		zlog.Config.Outputs = []zlog.OutputFunc{} // Don't care about logs; don't spam.
+	}
 }
 
 func runTest(
@@ -53,7 +67,6 @@ func runTest(
 	tt handlerTest,
 	fun func(*testing.T, *httptest.ResponseRecorder, *http.Request),
 ) {
-
 	if tt.method == "" {
 		tt.method = "GET"
 	}
@@ -69,18 +82,18 @@ func runTest(
 
 		if tt.wantCode > 0 {
 			t.Run(sn, func(t *testing.T) {
-				ctx, clean := goatcounter.StartTest(t)
+				ctx, clean := gctest.DB(t)
 				defer clean()
 
-				r, rr := newTest(ctx, tt.method, tt.path, bytes.NewReader(jsonutil.MustMarshal(tt.body)))
+				r, rr := newTest(ctx, tt.method, tt.path, bytes.NewReader(zjson.MustMarshal(tt.body)))
 				if tt.setup != nil {
-					tt.setup(ctx)
+					tt.setup(ctx, t)
 				}
 				if tt.auth {
-					login(t, rr, r)
+					login(t, r)
 				}
 
-				tt.router(zdb.MustGet(ctx).(*sqlx.DB)).ServeHTTP(rr, r)
+				tt.router(zdb.MustGet(ctx)).ServeHTTP(rr, r)
 				ztest.Code(t, rr, tt.wantCode)
 				if !strings.Contains(rr.Body.String(), tt.wantBody) {
 					t.Errorf("wrong body\nwant: %s\ngot:  %s", tt.wantBody, rr.Body.String())
@@ -98,7 +111,7 @@ func runTest(
 		}
 
 		t.Run("form", func(t *testing.T) {
-			ctx, clean := goatcounter.StartTest(t)
+			ctx, clean := gctest.DB(t)
 			defer clean()
 
 			form := formBody(tt.body)
@@ -106,13 +119,13 @@ func runTest(
 			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			r.Header.Set("Content-Length", fmt.Sprintf("%d", len(form)))
 			if tt.setup != nil {
-				tt.setup(ctx)
+				tt.setup(ctx, t)
 			}
 			if tt.auth {
-				login(t, rr, r)
+				login(t, r)
 			}
 
-			tt.router(zdb.MustGet(ctx).(*sqlx.DB)).ServeHTTP(rr, r)
+			tt.router(zdb.MustGet(ctx)).ServeHTTP(rr, r)
 			ztest.Code(t, rr, tt.wantFormCode)
 			if !strings.Contains(rr.Body.String(), tt.wantFormBody) {
 				t.Errorf("wrong body\nwant: %q\ngot:  %q", tt.wantFormBody, rr.Body.String())
@@ -126,22 +139,13 @@ func runTest(
 	})
 }
 
-func login(t *testing.T, rr *httptest.ResponseRecorder, r *http.Request) {
+func login(t *testing.T, r *http.Request) {
 	t.Helper()
 
-	// Insert user
-	u := goatcounter.User{Site: 1, Name: "Example", Email: "test@example.com"}
-	err := u.Insert(r.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
+	u := goatcounter.GetUser(r.Context())
 
 	// Login user
-	err = u.RequestLogin(r.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = u.Login(r.Context())
+	err := u.Login(r.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,11 +164,14 @@ func login(t *testing.T, rr *httptest.ResponseRecorder, r *http.Request) {
 	r.Form.Set("csrf", *u.CSRFToken)
 
 	r.Header.Set("Cookie", "key="+*u.LoginToken)
-	*r = *r.WithContext(context.WithValue(r.Context(), ctxkey.User, u))
 }
 
 func newTest(ctx context.Context, method, path string, body io.Reader) (*http.Request, *httptest.ResponseRecorder) {
-	return ztest.NewRequest(method, path, body).WithContext(ctx), httptest.NewRecorder()
+	site := goatcounter.MustGetSite(ctx)
+	r, rr := ztest.NewRequest(method, path, body).WithContext(ctx), httptest.NewRecorder()
+	r.Header.Set("User-Agent", "GoatCounter test runner/1.0")
+	r.Host = site.Code + "." + cfg.Domain
+	return r, rr
 }
 
 // Convert anything to an "application/x-www-form-urlencoded" form.
@@ -174,7 +181,7 @@ func newTest(ctx context.Context, method, path string, body io.Reader) (*http.Re
 // Note: this is primitive, but enough for now.
 func formBody(i interface{}) string {
 	var m map[string]string
-	jsonutil.MustUnmarshal(jsonutil.MustMarshal(i), &m)
+	zjson.MustUnmarshal(zjson.MustMarshal(i), &m)
 
 	f := make(url.Values)
 	for k, v := range m {

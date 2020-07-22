@@ -1,23 +1,19 @@
-// Copyright © 2019 Martin Tournoij <martin@arp242.net>
-// This file is part of GoatCounter and published under the terms of the AGPLv3,
-// which can be found in the LICENSE file or at gnu.org/licenses/agpl.html
+// Copyright © 2019 Martin Tournoij – This file is part of GoatCounter and
+// published under the terms of a slightly modified EUPL v1.2 license, which can
+// be found in the LICENSE file or at https://license.goatcounter.com
 
 package goatcounter
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
-	"sort"
-	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
-	"github.com/jmoiron/sqlx"
-	"github.com/pkg/errors"
-	"zgo.at/goatcounter/cfg"
-	"zgo.at/utils/jsonutil"
-	"zgo.at/utils/sqlutil"
+	"zgo.at/errors"
 	"zgo.at/zdb"
 	"zgo.at/zlog"
 	"zgo.at/zvalidate"
@@ -25,205 +21,177 @@ import (
 
 func ptr(s string) *string { return &s }
 
-// ref_scheme column
-var (
-	RefSchemeHTTP      = ptr("h")
-	RefSchemeOther     = ptr("o")
-	RefSchemeGenerated = ptr("g")
-)
-
 type Hit struct {
-	Site int64 `db:"site" json:"-"`
+	ID      int64  `db:"id" json:"-"`
+	Site    int64  `db:"site" json:"-"`
+	Session *int64 `db:"session" json:"-"`
 
-	Path        string            `db:"path" json:"p,omitempty"`
-	Ref         string            `db:"ref" json:"r,omitempty"`
-	RefParams   *string           `db:"ref_params" json:"-"`
-	RefOriginal *string           `db:"ref_original" json:"-"`
-	RefScheme   *string           `db:"ref_scheme" json:"-"`
-	Browser     string            `db:"browser" json:"-"`
-	Size        sqlutil.FloatList `db:"size" json:"s"`
-	Location    string            `db:"location"`
-	CreatedAt   time.Time         `db:"created_at" json:"-"`
+	Path  string     `db:"path" json:"p,omitempty"`
+	Title string     `db:"title" json:"t,omitempty"`
+	Ref   string     `db:"ref" json:"r,omitempty"`
+	Event zdb.Bool   `db:"event" json:"e,omitempty"`
+	Size  zdb.Floats `db:"size" json:"s,omitempty"`
+	Query string     `db:"-" json:"q,omitempty"`
+	Bot   int        `db:"bot" json:"b,omitempty"`
 
-	refURL *url.URL `db:"-"`
+	RefScheme  *string   `db:"ref_scheme" json:"-"`
+	Browser    string    `db:"browser" json:"-"`
+	Location   string    `db:"location" json:"-"`
+	FirstVisit zdb.Bool  `db:"first_visit" json:"-"`
+	CreatedAt  time.Time `db:"created_at" json:"-"`
+
+	RefURL *url.URL `db:"-" json:"-"`   // Parsed Ref
+	Random string   `db:"-" json:"rnd"` // Browser cache buster, as they don't always listen to Cache-Control
+
+	// Some values we need to pass from the HTTP handler to memstore
+	RemoteAddr string `db:"-" json:"-"`
 }
 
-var groups = map[string]string{
-	// HN has <meta name="referrer" content="origin"> so we only get the domain.
-	"news.ycombinator.com":               "Hacker News",
-	"hn.algolia.com":                     "Hacker News",
-	"hckrnews.com":                       "Hacker News",
-	"hn.premii.com":                      "Hacker News",
-	"com.stefandekanski.hackernews.free": "Hacker News",
-	"io.github.hidroh.materialistic":     "Hacker News",
-	"hackerweb.app":                      "Hacker News",
-	"www.daemonology.net/hn-daily":       "Hacker News",
-	"quiethn.com":                        "Hacker News",
-	"hnews.xyz":                          "Hacker News",
-	"hackernewsmobile.com":               "Hacker News",
-	// http://www.elegantreader.com/item/17358103
-	// https://www.daemonology.net/hn-daily/2019-05.html
-
-	"mail.google.com":       "Email",
-	"com.google.android.gm": "Email",
-	"mail.yahoo.com":        "Email",
-	//  https://mailchi.mp
-
-	"org.fox.ttrss":            "RSS",
-	"www.inoreader.com":        "RSS",
-	"com.innologica.inoreader": "RSS",
-	"usepanda.com":             "RSS",
-	"feedly.com":               "RSS",
-
-	"com.google.android.googlequicksearchbox":                      "Google",
-	"com.google.android.googlequicksearchbox/https/www.google.com": "Google",
-
-	"com.andrewshu.android.reddit":       "www.reddit.com",
-	"com.laurencedawson.reddit_sync":     "www.reddit.com",
-	"com.laurencedawson.reddit_sync.dev": "www.reddit.com",
-	"com.laurencedawson.reddit_sync.pro": "www.reddit.com",
-
-	"m.facebook.com":  "www.facebook.com",
-	"l.facebook.com":  "www.facebook.com",
-	"lm.facebook.com": "www.facebook.com",
-
-	"org.telegram.messenger": "Telegram Messenger",
-
-	"com.Slack": "Slack Chat",
-}
-
-var hostAlias = map[string]string{
-	"en.m.wikipedia.org": "en.wikipedia.org",
-	"m.facebook.com":     "www.facebook.com",
-	"m.habr.com":         "habr.com",
-	"old.reddit.com":     "www.reddit.com",
-	"i.reddit.com":       "www.reddit.com",
-	"np.reddit.com":      "www.reddit.com",
-	"fr.reddit.com":      "www.reddit.com",
-}
-
-func cleanURL(ref string, refURL *url.URL) (string, *string, bool, bool) {
-	// I'm not sure where these links are generated, but there are *a lot* of
-	// them.
-	if refURL.Host == "link.oreilly.com" {
-		return "link.oreilly.com", nil, true, false
+func (h *Hit) cleanPath(ctx context.Context) {
+	if h.Event {
+		h.Path = strings.TrimLeft(h.Path, "/")
+		return
 	}
 
-	// Always remove protocol.
-	refURL.Scheme = ""
-	if p := strings.Index(ref, ":"); p > -1 && p < 7 {
-		ref = ref[p+3:]
-	}
+	// Normalize the path when accessed from e.g. offline storage or internet
+	// archive.
+	{
+		// Some offline reader thing.
+		// /storage/emulated/[..]/Curl_to_shell_isn_t_so_bad2019-11-09-11-07-58/curl-to-sh.html
+		if strings.HasPrefix(h.Path, "/storage/emulated/0/Android/data/jonas.tool.saveForOffline/files/") {
+			h.Path = h.Path[65:]
+			if s := strings.IndexRune(h.Path, '/'); s > -1 {
+				h.Path = h.Path[s:]
+			}
+		}
 
-	changed := false
-
-	// Normalize some hosts.
-	if a, ok := hostAlias[refURL.Host]; ok {
-		changed = true
-		refURL.Host = a
-	}
-
-	// Group based on URL.
-	if strings.HasPrefix(refURL.Host, "www.google.") {
-		// Group all "google.co.nz", "google.nl", etc. as "Google".
-		return "Google", nil, true, true
-	}
-	if g, ok := groups[refURL.Host]; ok {
-		return g, nil, true, true
-	}
-
-	// Useful: https://lobste.rs/s/tslw6k/why_i_m_still_using_jquery_2019
-	// Not really: https://lobste.rs/newest/page/8, https://lobste.rs/page/7
-	//             https://lobste.rs/search, https://lobste.rs/t/javascript
-	if refURL.Host == "lobste.rs" && !strings.HasPrefix(refURL.Path, "/s/") {
-		return "lobste.rs", nil, true, false
-	}
-	if refURL.Host == "gambe.ro" && !strings.HasPrefix(refURL.Path, "/s/") {
-		return "lobste.rs", nil, true, false
-	}
-
-	// Reddit
-	// www.reddit.com/r/programming/top
-	// www.reddit.com/r/programming/.compact
-	// www.reddit.com/r/programming.compact
-	// www.reddit.com/r/webdev/new
-	// www.reddit.com/r/vim/search
-	if refURL.Host == "www.reddit.com" {
-		switch {
-		case strings.HasSuffix(refURL.Path, "/top") || strings.HasSuffix(refURL.Path, "/new"):
-			refURL.Path = refURL.Path[:len(refURL.Path)-4]
-			changed = true
-		case strings.HasSuffix(refURL.Path, "/search"):
-			refURL.Path = refURL.Path[:len(refURL.Path)-7]
-			changed = true
-		case strings.HasSuffix(refURL.Path, ".compact"):
-			refURL.Path = refURL.Path[:len(refURL.Path)-8]
-			changed = true
+		// Internet archive.
+		// /web/20200104233523/https://www.arp242.net/tmux.html
+		if strings.HasPrefix(h.Path, "/web/20") {
+			u, err := url.Parse(h.Path[20:])
+			if err == nil {
+				h.Path = u.Path
+				if q := u.Query().Encode(); q != "" {
+					h.Path += "?" + q
+				}
+			}
 		}
 	}
 
-	// Clean query parameters.
-	i := strings.Index(ref, "?")
-	if i == -1 {
-		// No parameters so no work.
-		return strings.TrimLeft(refURL.String(), "/"), nil, changed, false
+	// Remove various tracking query parameters.
+	{
+		h.Path = strings.TrimRight(h.Path, "?&")
+		if !strings.Contains(h.Path, "?") { // No query parameters.
+			return
+		}
+
+		u, err := url.Parse(h.Path)
+		if err != nil {
+			return
+		}
+		q := u.Query()
+
+		q.Del("fbclid") // Magic undocumented Facebook tracking parameter.
+		q.Del("ref")    // ProductHunt and a few others.
+		q.Del("mc_cid") // MailChimp
+		q.Del("mc_eid")
+		for k := range q { // Google tracking parameters.
+			if strings.HasPrefix(k, "utm_") {
+				q.Del(k)
+			}
+		}
+
+		// Some WeChat tracking thing; see e.g:
+		// https://translate.google.com/translate?sl=auto&tl=en&u=https%3A%2F%2Fsheshui.me%2Fblogs%2Fexplain-wechat-nsukey-url
+		// https://translate.google.com/translate?sl=auto&tl=en&u=https%3A%2F%2Fwww.v2ex.com%2Ft%2F312163
+		q.Del("nsukey")
+		q.Del("isappinstalled")
+		if q.Get("from") == "singlemessage" || q.Get("from") == "groupmessage" {
+			q.Del("from")
+		}
+
+		u.RawQuery = q.Encode()
+		h.Path = u.String()
 	}
-	eq := ref[i+1:]
-	ref = ref[:i]
+}
 
-	// Twitter's t.co links add this.
-	if refURL.Host == "t.co" && eq == "amp=1" {
-		return ref, nil, false, false
+func (h Hit) String() string {
+	b := new(bytes.Buffer)
+	t := tabwriter.NewWriter(b, 8, 8, 2, ' ', 0)
+	fmt.Fprintf(t, "ID\t%d\n", h.ID)
+	fmt.Fprintf(t, "Site\t%d\n", h.Site)
+	if h.Session == nil {
+		fmt.Fprintf(t, "Session\t<nil>\n")
+	} else {
+		fmt.Fprintf(t, "Session\t%d\n", *h.Session)
 	}
-
-	q := refURL.Query()
-	refURL.RawQuery = ""
-	start := len(q)
-
-	// Google analytics tracking parameters.
-	q.Del("utm_source")
-	q.Del("utm_medium")
-	q.Del("utm_campaign")
-	q.Del("utm_term")
-
-	if len(q) == 0 {
-		return refURL.String()[2:], nil, changed || len(q) != start, false
+	fmt.Fprintf(t, "Path\t%q\n", h.Path)
+	fmt.Fprintf(t, "Title\t%q\n", h.Title)
+	fmt.Fprintf(t, "Ref\t%q\n", h.Ref)
+	fmt.Fprintf(t, "Event\t%t\n", h.Event)
+	if h.RefScheme == nil {
+		fmt.Fprintf(t, "RefScheme\t<nil>\n")
+	} else {
+		fmt.Fprintf(t, "RefScheme\t%q\n", *h.RefScheme)
 	}
-	eq = q.Encode()
-	return refURL.String()[2:], &eq, changed || len(q) != start, false
+	fmt.Fprintf(t, "Browser\t%q\n", h.Browser)
+	fmt.Fprintf(t, "Size\t%q\n", h.Size)
+	fmt.Fprintf(t, "Location\t%q\n", h.Location)
+	fmt.Fprintf(t, "Bot\t%d\n", h.Bot)
+	fmt.Fprintf(t, "CreatedAt\t%s\n", h.CreatedAt)
+	t.Flush()
+	return b.String()
 }
 
 // Defaults sets fields to default values, unless they're already set.
 func (h *Hit) Defaults(ctx context.Context) {
-	if s := GetSite(ctx); s != nil && s.ID > 0 { // Not set from memstore.
-		h.Site = s.ID
-	}
+	site := MustGetSite(ctx)
+	h.Site = site.ID
 
 	if h.CreatedAt.IsZero() {
-		h.CreatedAt = time.Now().UTC()
+		h.CreatedAt = Now()
 	}
 
-	if h.Ref != "" && h.refURL != nil {
-		if h.refURL.Scheme == "http" || h.refURL.Scheme == "https" {
+	h.cleanPath(ctx)
+
+	// Set campaign.
+	if !h.Event && h.Query != "" {
+		if h.Query[0] != '?' {
+			h.Query = "?" + h.Query
+		}
+		u, err := url.Parse(h.Query)
+		if err != nil {
+			return
+		}
+		q := u.Query()
+
+		for _, c := range site.Settings.Campaigns {
+			if _, ok := q[c]; ok {
+				h.Ref = q.Get(c)
+				h.RefURL = nil
+				h.RefScheme = RefSchemeCampaign
+				break
+			}
+		}
+	}
+
+	if h.Ref != "" && h.RefURL != nil {
+		if h.RefURL.Scheme == "http" || h.RefURL.Scheme == "https" {
 			h.RefScheme = RefSchemeHTTP
 		} else {
 			h.RefScheme = RefSchemeOther
 		}
 
-		var store, generated bool
-		r := h.Ref
-		h.Ref, h.RefParams, store, generated = cleanURL(h.Ref, h.refURL)
-		if store {
-			h.RefOriginal = &r
-		}
-
+		var generated bool
+		h.Ref, generated = cleanRefURL(h.Ref, h.RefURL)
 		if generated {
 			h.RefScheme = RefSchemeGenerated
 		}
 	}
-
 	h.Ref = strings.TrimRight(h.Ref, "/")
-	h.Path = "/" + strings.Trim(h.Path, "/")
+	if !h.Event {
+		h.Path = "/" + strings.Trim(h.Path, "/")
+	}
 }
 
 // Validate the object.
@@ -231,448 +199,165 @@ func (h *Hit) Validate(ctx context.Context) error {
 	v := zvalidate.New()
 
 	v.Required("site", h.Site)
+	//v.Required("session", h.Session)
 	v.Required("path", h.Path)
+	v.Required("created_at", h.CreatedAt)
+	v.UTF8("path", h.Path)
+	v.UTF8("title", h.Title)
+	v.UTF8("ref", h.Ref)
+	v.UTF8("browser", h.Browser)
+
+	v.Len("path", h.Path, 1, 2048)
+	v.Len("title", h.Title, 0, 1024)
+	v.Len("ref", h.Ref, 0, 2048)
+	v.Len("browser", h.Browser, 0, 512)
+
+	// Small margin as client's clocks may not be 100% accurate.
+	if h.CreatedAt.After(Now().Add(5 * time.Second)) {
+		v.Append("created_at", "in the future")
+	}
 
 	return v.ErrorOrNil()
 }
 
 type Hits []Hit
 
-// List all hits for a site.
-func (h *Hits) List(ctx context.Context) error {
-	return errors.Wrap(zdb.MustGet(ctx).SelectContext(ctx, h,
-		`select * from hits where site=$1`, MustGetSite(ctx).ID),
-		"Hits.List")
+// List all hits for a site, including bot requests.
+func (h *Hits) List(ctx context.Context, limit, paginate int64) (int64, error) {
+	if limit == 0 || limit > 5000 {
+		limit = 5000
+	}
+
+	err := zdb.MustGet(ctx).SelectContext(ctx, h,
+		`select * from hits where site=$1 and id>$2 order by id asc limit $3`,
+		MustGetSite(ctx).ID, paginate, limit)
+
+	last := paginate
+	if len(*h) > 0 {
+		hh := *h
+		last = hh[len(hh)-1].ID
+	}
+
+	return last, errors.Wrap(err, "Hits.List")
+}
+
+// Count the number of pageviews.
+func (h *Hits) Count(ctx context.Context) (int64, error) {
+	var c int64
+	err := zdb.MustGet(ctx).GetContext(ctx, &c,
+		`select coalesce(sum(total), 0) from hit_counts where site=$1`,
+		MustGetSite(ctx).ID)
+	return c, errors.Wrap(err, "Hits.Count")
 }
 
 // Purge all paths matching the like pattern.
-func (h *Hits) Purge(ctx context.Context, path string) error {
-	_, err := zdb.MustGet(ctx).ExecContext(ctx,
-		`delete from hits where site=$1 and lower(path) like lower($2)`,
-		MustGetSite(ctx).ID, path)
-	if err != nil {
-		return errors.Wrap(err, "Hits.Purge")
+func (h *Hits) Purge(ctx context.Context, path string, matchTitle bool) error {
+	query := `/* Hits.Purge */
+		delete from %s where site=$1 and lower(path) like lower($2)`
+	if matchTitle {
+		query += ` and lower(title) like lower($2) `
 	}
 
-	_, err = zdb.MustGet(ctx).ExecContext(ctx,
-		`delete from hit_stats where site=$1 and lower(path) like lower($2)`,
-		MustGetSite(ctx).ID, path)
-	return errors.Wrap(err, "Hits.Purge")
-}
+	return zdb.TX(ctx, func(ctx context.Context, tx zdb.DB) error {
+		site := MustGetSite(ctx).ID
 
-type HitStat struct {
-	Day  string
-	Days [][]int
-}
-
-type hs struct {
-	Count     int     `db:"count"`
-	Max       int     `db:"-"`
-	Path      string  `db:"path"`
-	RefScheme *string `db:"ref_scheme"`
-	Stats     []HitStat
-}
-
-type HitStats []hs
-
-func (h *HitStats) List(ctx context.Context, start, end time.Time, exclude []string) (int, int, bool, error) {
-	db := zdb.MustGet(ctx)
-	site := MustGetSite(ctx)
-
-	limit := site.Settings.Limits.Page
-	if limit == 0 {
-		limit = 20
-	}
-	more := false
-	if len(exclude) > 0 {
-		// Get one page more so we can detect if there are more pages after
-		// this.
-		more = true
-		limit++
-	}
-
-	query := `
-		select
-			path, count(path) as count
-		from hits
-		where
-			site=? and
-			created_at >= ? and
-			created_at <= ?`
-	args := []interface{}{site.ID, dayStart(start), dayEnd(end)}
-
-	// Quite a bit faster to not check path.
-	if len(exclude) > 0 {
-		args = append(args, exclude)
-		query += ` and path not in (?) `
-	}
-
-	query, args, err := sqlx.In(query+`
-		group by path
-		order by count desc
-		limit ?`, append(args, limit)...)
-	if err != nil {
-		return 0, 0, false, errors.Wrap(err, "HitStats.List")
-	}
-
-	l := zlog.Module("HitStats.List")
-
-	err = db.SelectContext(ctx, h, db.Rebind(query), args...)
-	if err != nil {
-		return 0, 0, false, errors.Wrap(err, "HitStats.List")
-	}
-	l = l.Since("select hits")
-
-	if more {
-		if len(*h) == limit {
-			x := *h
-			x = x[:len(x)-1]
-			*h = x
-		} else {
-			more = false
+		for _, t := range []string{"hits", "hit_stats", "hit_counts"} {
+			_, err := tx.ExecContext(ctx, fmt.Sprintf(query, t), site, path)
+			if err != nil {
+				return errors.Wrapf(err, "Hits.Purge %s", t)
+			}
 		}
-	}
+		_, err := tx.ExecContext(ctx, `/* Hits.Purge */
+			delete from ref_counts where site=$1 and lower(path) like lower($2)`,
+			site, path)
+		if err != nil {
+			return errors.Wrap(err, "Hits.Purge ref_counts")
+		}
 
-	// Add stats
-	type stats struct {
-		Path  string    `json:"path"`
-		Day   time.Time `json:"day"`
-		Stats []byte    `json:"stats"`
-	}
-	var st []stats
-	err = db.SelectContext(ctx, &st, `
-		select path, day, stats
-		from hit_stats
-		where
-			site=$1 and
-			day >= $2 and
-			day <= $3
-		order by day asc`,
-		site.ID, start.Format("2006-01-02"), end.Format("2006-01-02"))
-	if err != nil {
-		return 0, 0, false, errors.Wrap(err, "HitStats.List")
-	}
-	l = l.Since("select hits_stats")
-
-	// Get max amount and totals.
-	hh := *h
-	totalDisplay := 0
-	for i := range hh {
-		for _, s := range st {
-			if s.Path == hh[i].Path {
-				var x [][]int
-				jsonutil.MustUnmarshal(s.Stats, &x)
-				hh[i].Stats = append(hh[i].Stats, HitStat{Day: s.Day.Format("2006-01-02"), Days: x})
-
-				// Get max.
-				for j := range x {
-					totalDisplay += x[j][1]
-					if x[j][1] > hh[i].Max {
-						hh[i].Max = x[j][1]
-					}
+		// Delete all other stats as well if there's nothing left: not much use
+		// for it.
+		var check Hits
+		n, err := check.Count(ctx)
+		if err == nil && n == 0 {
+			for _, t := range statTables {
+				_, err := tx.ExecContext(ctx, `delete from `+t+` where site=$1`, site)
+				if err != nil {
+					zlog.Errorf("Hits.Purge: delete %s: %s", t, err)
 				}
 			}
 		}
 
-		if hh[i].Max < 10 {
-			hh[i].Max = 10
-		}
-	}
-
-	l = l.Since("reorder data")
-
-	// Get total.
-	total := 0
-	err = db.GetContext(ctx, &total, `
-		select count(path)
-		from hits
-		where
-			site=$1 and
-			created_at >= $2 and
-			created_at <= $3`,
-		site.ID, dayStart(start), dayEnd(end))
-
-	l = l.Since("get total")
-	return total, totalDisplay, more, errors.Wrap(err, "HitStats.List")
+		return nil
+	})
 }
 
-// ListRefs lists all references for a path.
-func (h *HitStats) ListRefs(ctx context.Context, path string, start, end time.Time, offset int) (bool, error) {
-	site := MustGetSite(ctx)
-
-	limit := site.Settings.Limits.Ref
-	if limit == 0 {
-		limit = 10
-	}
-
-	// TODO: using offset for pagination is not ideal:
-	// data can change in the meanwhile, and it still gets the first N rows,
-	// which is more expensive than it needs to be.
-	// It's "good enough" for now, though.
-	err := zdb.MustGet(ctx).SelectContext(ctx, h, `
-		select
-			ref as path,
-			count(ref) as count,
-			ref_scheme
-		from hits
-		where
-			site=$1 and
-			lower(path)=lower($2) and
-			created_at >= $3 and
-			created_at <= $4
-		group by ref, ref_scheme
-		order by count(*) desc, path desc
-		limit $5 offset $6`,
-		site.ID, path, dayStart(start), dayEnd(end), limit+1, offset)
-
-	more := false
-	if len(*h) > limit {
-		more = true
-		x := *h
-		x = x[:len(x)-1]
-		*h = x
-	}
-
-	return more, errors.Wrap(err, "RefStats.ListRefs")
+type Stat struct {
+	Day          string
+	Hourly       []int
+	HourlyUnique []int
+	Daily        int
+	DailyUnique  int
 }
 
-// ListPaths lists all paths we have statistics for.
-func (h *HitStats) ListPaths(ctx context.Context) ([]string, error) {
-	var paths []string
-	err := zdb.MustGet(ctx).SelectContext(ctx, &paths,
-		`select path from hit_stats where site=$1 group by path`,
-		MustGetSite(ctx).ID)
-	return paths, errors.Wrap(err, "Hits.ListPaths")
+type HitStat struct {
+	Count       int      `db:"count"`
+	CountUnique int      `db:"count_unique"`
+	Path        string   `db:"path"`
+	Event       zdb.Bool `db:"event"`
+	Title       string   `db:"title"`
+	RefScheme   *string  `db:"ref_scheme"`
+	Max         int
+	Stats       []Stat
 }
+
+type HitStats []HitStat
 
 // ListPathsLike lists all paths matching the like pattern.
-func (h *HitStats) ListPathsLike(ctx context.Context, path string) error {
+func (h *HitStats) ListPathsLike(ctx context.Context, path string, matchTitle bool) error {
+	t := ""
+	if matchTitle {
+		t = " or lower(title) like lower($2) "
+	}
+
 	err := zdb.MustGet(ctx).SelectContext(ctx, h, `
-		select path, count(path) as count from hits
-		where site=$1 and lower(path) like lower($2)
+		select path, title, sum(total) as count from hit_counts
+		where site=$1 and (lower(path) like lower($2) `+t+`)
+		group by path, title
+		order by count desc
+	`, MustGetSite(ctx).ID, path)
+	return errors.Wrap(err, "Hits.ListPathsLike")
+}
+
+type StatT struct {
+	// TODO: should be Stat, but that's already taken and don't want to rename
+	// everything right now.
+	Name        string  `db:"name"`
+	Count       int     `db:"count"`
+	CountUnique int     `db:"count_unique"`
+	RefScheme   *string `db:"ref_scheme"`
+}
+
+type Stats struct {
+	More  bool
+	Stats []StatT
+}
+
+// ByRef lists all paths by reference.
+func (h *Stats) ByRef(ctx context.Context, start, end time.Time, ref string) error {
+	err := zdb.MustGet(ctx).SelectContext(ctx, &h.Stats, `/* Stats.ByRef */
+		select
+			path as name,
+			coalesce(sum(total), 0) as count,
+			coalesce(sum(total_unique), 0) as count_unique
+		from ref_counts where
+			site=$1 and
+			hour>=$2 and
+			hour<=$3 and
+			ref = $4
 		group by path
 		order by count desc
-		`, MustGetSite(ctx).ID, path)
-	return errors.Wrap(err, "Hits.ListPaths")
-}
+		limit 10`,
+		MustGetSite(ctx).ID, start.Format(zdb.Date), end.Format(zdb.Date), ref)
 
-// TODO: rename to just "Stats" or something, as it's used for much more now.
-type BrowserStats []struct {
-	Browser string
-	Mobile  bool
-	Count   int
-}
-
-// List all browser statistics for the given time period.
-func (h *BrowserStats) List(ctx context.Context, start, end time.Time) (int, int, error) {
-	err := zdb.MustGet(ctx).SelectContext(ctx, h, `
-		select browser, sum(count) as count from browser_stats
-		where site=$1 and day >= $2 and day <= $3
-		group by browser 
-		order by count desc
-	`, MustGetSite(ctx).ID, start.Format("2006-01-02"), end.Format("2006-01-02"))
-	if err != nil {
-		return 0, 0, errors.Wrap(err, "BrowserStats.List browsers")
-	}
-
-	var total int
-	for _, b := range *h {
-		total += b.Count
-	}
-
-	// List number of mobile browsers.
-	var m *int
-	err = zdb.MustGet(ctx).GetContext(ctx, &m, `
-		select sum(count) from browser_stats
-		where site=$1 and day >= $2 and day <= $3 and mobile=true
-	`, MustGetSite(ctx).ID, start.Format("2006-01-02"), end.Format("2006-01-02"))
-	if err != nil {
-		return 0, 0, errors.Wrap(err, "BrowserStats.List mobile")
-	}
-
-	mobile := 0
-	if m != nil {
-		mobile = *m
-	}
-
-	return total, mobile, nil
-}
-
-// ListBrowser lists all the versions for one browser.
-func (h *BrowserStats) ListBrowser(ctx context.Context, browser string, start, end time.Time) (int, error) {
-	err := zdb.MustGet(ctx).SelectContext(ctx, h, `
-		select
-			browser || ' ' || version as browser,
-			sum(count) as count
-		from browser_stats
-		where site=$1 and day >= $2 and day <= $3 and lower(browser)=lower($4)
-		group by browser, version
-		order by count desc
-	`, MustGetSite(ctx).ID, start.Format("2006-01-02"), end.Format("2006-01-02"), browser)
-	if err != nil {
-		return 0, errors.Wrap(err, "BrowserStats.ListBrowser")
-	}
-
-	var total int
-	for _, b := range *h {
-		total += b.Count
-	}
-	return total, nil
-}
-
-const (
-	sizePhones      = "Phones"
-	sizeLargePhones = "Large phones, small tablets"
-	sizeTablets     = "Tablets and small laptops"
-	sizeDesktop     = "Computer monitors"
-	sizeDesktopHD   = "Computer monitors larger than HD"
-	sizeUnknown     = "(unknown)"
-)
-
-// ListSizes lists all device sizes.
-func (h *BrowserStats) ListSizes(ctx context.Context, start, end time.Time) error {
-	// TODO: just store better; all of this is ugly.
-	// select split_part(size, ',', 1) || ',' || split_part(size, ',', 2) as browser,
-	// order by cast(split_part(size, ',', 1) as int) asc
-	err := zdb.MustGet(ctx).SelectContext(ctx, h, `
-		select size as browser, count(size) as count
-		from hits
-		where
-			site=$1 and
-			created_at >= $2 and created_at <= $3
-		group by size
-	`, MustGetSite(ctx).ID, dayStart(start), dayEnd(end))
-	if err != nil {
-		return errors.Wrap(err, "BrowserStats.ListSize")
-	}
-
-	// hh := *h
-	// for i := range hh {
-	// 	s := strings.Split(hh[i].Browser, ", ")
-	// 	hh[i].Browser = fmt.Sprintf("%s×%s", s[0], s[1])
-	// }
-	// sort.Slice(hh, func(i int, j int) bool {
-	// 	p1, _ := strconv.ParseInt(hh[i].Browser[:strings.Index(hh[i].Browser, "×")], 10, 32)
-	// 	p2, _ := strconv.ParseInt(hh[j].Browser[:strings.Index(hh[j].Browser, "×")], 10, 32)
-	// 	return p1 < p2
-	// })
-
-	// TODO: group a bit; ideally I'd like to make a line chart in the future,
-	// in which case this should no longer be needed.
-	ns := BrowserStats{
-		{sizePhones, false, 0},
-		{sizeLargePhones, false, 0},
-		{sizeTablets, false, 0},
-		{sizeDesktop, false, 0},
-		{sizeDesktopHD, false, 0},
-		{sizeUnknown, false, 0},
-	}
-
-	hh := *h
-	for i := range hh {
-		x, _ := strconv.ParseInt(strings.Split(hh[i].Browser, ", ")[0], 10, 16)
-		// TODO: apply scaling?
-		switch {
-		case x == 0:
-			ns[5].Count += hh[i].Count
-		case x <= 384:
-			ns[0].Count += hh[i].Count
-		case x <= 1024:
-			ns[1].Count += hh[i].Count
-		case x <= 1440:
-			ns[2].Count += hh[i].Count
-		case x <= 1920:
-			ns[3].Count += hh[i].Count
-		default:
-			ns[4].Count += hh[i].Count
-		}
-	}
-	*h = ns
-	return nil
-}
-
-// ListSize lists all sizes for one grouping.
-func (h *BrowserStats) ListSize(ctx context.Context, name string, start, end time.Time) (int, error) {
-	var where string
-	switch name {
-	case sizePhones:
-		where = "size != '' and cast(split_part(size, ',', 1) as int) <= 384"
-	case sizeLargePhones:
-		where = "size != '' and cast(split_part(size, ',', 1) as int) <= 1024 and cast(split_part(size, ',', 1) as int) > 384"
-	case sizeTablets:
-		where = "size != '' and cast(split_part(size, ',', 1) as int) <= 1440 and cast(split_part(size, ',', 1) as int) > 1024"
-	case sizeDesktop:
-		where = "size != '' and cast(split_part(size, ',', 1) as int) <= 1920 and cast(split_part(size, ',', 1) as int) > 1440"
-	case sizeDesktopHD:
-		where = "size != '' and cast(split_part(size, ',', 1) as int) > 1920"
-	case sizeUnknown:
-		where = " size = ''"
-	}
-
-	if !cfg.PgSQL {
-		where = strings.Replace(where,
-			"split_part(size, ',', 1)",
-			"substr(size, 0, instr(size, ','))",
-			-1)
-	}
-
-	err := zdb.MustGet(ctx).SelectContext(ctx, h, fmt.Sprintf(`
-		select size as browser, count(size) as count
-		from hits
-		where
-			site=$1 and
-			created_at >= $2 and created_at <= $3 and
-			%s
-		group by size
-	`, where), MustGetSite(ctx).ID, dayStart(start), dayEnd(end))
-	if err != nil {
-		return 0, errors.Wrap(err, "BrowserStats.ListSize")
-	}
-
-	grouped := make(map[string]int)
-	hh := *h
-	for i := range hh {
-		// TODO: apply scaling?
-		scaleless := strings.Join(strings.Split(hh[i].Browser, ", ")[:2], "×")
-		grouped[scaleless] += hh[i].Count
-	}
-
-	ns := BrowserStats{}
-	total := 0
-	for size, count := range grouped {
-		total += count
-		ns = append(ns, struct {
-			Browser string
-			Mobile  bool
-			Count   int
-		}{size, false, count})
-	}
-	sort.Slice(ns, func(i int, j int) bool { return ns[i].Count > ns[j].Count })
-	*h = ns
-
-	return total, nil
-}
-
-// List all location statistics for the given time period.
-func (h *BrowserStats) ListLocations(ctx context.Context, start, end time.Time) (int, error) {
-	err := zdb.MustGet(ctx).SelectContext(ctx, h, `
-		select
-			iso_3166_1.name as browser,
-			sum(count) as count
-		from location_stats
-		join iso_3166_1 on iso_3166_1.alpha2=location
-		where site=$1 and day >= $2 and day <= $3
-		group by location, iso_3166_1.name
-		order by count desc
-	`, MustGetSite(ctx).ID, start.Format("2006-01-02"), end.Format("2006-01-02"))
-	if err != nil {
-		return 0, errors.Wrap(err, "BrowserStats.ListLocations")
-	}
-
-	var total int
-	for _, b := range *h {
-		total += b.Count
-	}
-
-	return total, nil
+	return errors.Wrap(err, "Stats.ByRef")
 }

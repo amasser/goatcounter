@@ -1,6 +1,6 @@
-// Copyright © 2019 Martin Tournoij <martin@arp242.net>
-// This file is part of GoatCounter and published under the terms of the AGPLv3,
-// which can be found in the LICENSE file or at gnu.org/licenses/agpl.html
+// Copyright © 2019 Martin Tournoij – This file is part of GoatCounter and
+// published under the terms of a slightly modified EUPL v1.2 license, which can
+// be found in the LICENSE file or at https://license.goatcounter.com
 
 package handlers
 
@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"zgo.at/goatcounter"
+	"zgo.at/goatcounter/cfg"
 )
 
 func TestWebsiteTpl(t *testing.T) {
@@ -17,7 +20,7 @@ func TestWebsiteTpl(t *testing.T) {
 			router:   NewWebsite,
 			path:     "/",
 			wantCode: 200,
-			wantBody: "doesn’t track users;",
+			wantBody: "doesn’t track users with",
 		},
 		{
 			name:     "help",
@@ -31,7 +34,7 @@ func TestWebsiteTpl(t *testing.T) {
 			router:   NewWebsite,
 			path:     "/privacy",
 			wantCode: 200,
-			wantBody: "GoatCounter does not collect data which can be used to identify",
+			wantBody: "Screen size",
 		},
 		{
 			name:     "terms",
@@ -52,9 +55,9 @@ func TestWebsiteTpl(t *testing.T) {
 		{
 			name:     "signup",
 			router:   NewWebsite,
-			path:     "/signup/personal",
+			path:     "/signup",
 			wantCode: 200,
-			wantBody: `<label for="name">Site name</label>`,
+			wantBody: `<label for="email">Email address</label>`,
 		},
 	}
 
@@ -69,8 +72,8 @@ func TestWebsiteSignup(t *testing.T) {
 			name:         "basic",
 			method:       "POST",
 			router:       NewWebsite,
-			path:         "/signup/personal",
-			body:         signupArgs{Name: "Example", Code: "example", Email: "m@example.com", UserName: "Example user", TuringTest: "9"},
+			path:         "/signup",
+			body:         signupArgs{Code: "xxx", Email: "m@example.com", TuringTest: "9", Password: "coconuts"},
 			wantCode:     303,
 			wantFormCode: 303,
 		},
@@ -79,15 +82,16 @@ func TestWebsiteSignup(t *testing.T) {
 			name:         "no-code",
 			method:       "POST",
 			router:       NewWebsite,
-			path:         "/signup/personal",
-			body:         signupArgs{Name: "Example", Email: "m@example.com", UserName: "Example user", TuringTest: "9"},
+			path:         "/signup",
+			body:         signupArgs{Email: "m@example.com", TuringTest: "9", Password: "coconuts"},
 			wantCode:     200,
 			wantBody:     "", // TODO: should return JSON
 			wantFormCode: 200,
-			wantFormBody: "Error: must be set, must be longer than 1 characters",
+			wantFormBody: "Error: must be set, must be longer than 2 characters",
 		},
 	}
 
+	cfg.Plan = goatcounter.PlanPersonal
 	for _, tt := range tests {
 		runTest(t, tt, func(t *testing.T, rr *httptest.ResponseRecorder, r *http.Request) {
 			// TODO: test state

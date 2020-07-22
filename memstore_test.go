@@ -1,25 +1,27 @@
-// Copyright © 2019 Martin Tournoij <martin@arp242.net>
-// This file is part of GoatCounter and published under the terms of the AGPLv3,
-// which can be found in the LICENSE file or at gnu.org/licenses/agpl.html
+// Copyright © 2019 Martin Tournoij – This file is part of GoatCounter and
+// published under the terms of a slightly modified EUPL v1.2 license, which can
+// be found in the LICENSE file or at https://license.goatcounter.com
 
-package goatcounter
+package goatcounter_test
 
 import (
 	"context"
 	"testing"
 
+	. "zgo.at/goatcounter"
+	"zgo.at/goatcounter/gctest"
 	"zgo.at/zdb"
 )
 
 func TestMemstore(t *testing.T) {
-	ctx, clean := StartTest(t)
+	ctx, clean := gctest.DB(t)
 	defer clean()
 
 	for i := 0; i < 2000; i++ {
 		Memstore.Append(gen(ctx))
 	}
 
-	err := Memstore.Persist(ctx)
+	_, err := Memstore.Persist(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,8 +38,10 @@ func TestMemstore(t *testing.T) {
 
 func gen(ctx context.Context) Hit {
 	s := MustGetSite(ctx)
+	one := int64(1)
 	return Hit{
 		Site:    s.ID,
+		Session: &one,
 		Path:    "/test",
 		Ref:     "https://example.com/test",
 		Browser: "test",

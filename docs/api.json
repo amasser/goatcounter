@@ -1,0 +1,180 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "GoatCounter",
+    "version": "0.1",
+    "contact": {
+      "name": "Martin Tournoij",
+      "url": "https://www.goatcounter.com",
+      "email": "support@goatcounter.com"
+    }
+  },
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "tags": [
+    {
+      "name": "export"
+    }
+  ],
+  "paths": {
+    "/api/v0/export": {
+      "post": {
+        "consumes": [
+          "application/json"
+        ],
+        "description": "This starts a new export in the background.",
+        "operationId": "POST_api_v0_export",
+        "parameters": [
+          {
+            "in": "body",
+            "name": "handlers.apiExportRequest",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/handlers.apiExportRequest"
+            }
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "202": {
+            "description": "202 Accepted",
+            "schema": {
+              "$ref": "#/definitions/goatcounter.Export"
+            }
+          }
+        },
+        "summary": "Start a new export in the background.",
+        "tags": [
+          "export"
+        ]
+      }
+    },
+    "/api/v0/export/{id}": {
+      "get": {
+        "operationId": "GET_api_v0_export_{id}",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "integer"
+          }
+        ],
+        "produces": [
+          "application/json"
+        ],
+        "responses": {
+          "200": {
+            "description": "200 OK",
+            "schema": {
+              "$ref": "#/definitions/goatcounter.Export"
+            }
+          }
+        },
+        "summary": "Get details about an export.",
+        "tags": [
+          "export"
+        ]
+      }
+    },
+    "/api/v0/export/{id}/download": {
+      "get": {
+        "operationId": "GET_api_v0_export_{id}_download",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "integer"
+          }
+        ],
+        "produces": [
+          "text/csv"
+        ],
+        "responses": {
+          "200": {
+            "description": "200 OK (text/csv data)"
+          }
+        },
+        "summary": "Download an export file.",
+        "tags": [
+          "export"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "goatcounter.Export": {
+      "title": "Export",
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "error": {
+          "description": "Any errors that may have occured.",
+          "type": "string",
+          "readOnly": true
+        },
+        "finished_at": {
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "hash": {
+          "description": "SHA256 hash.",
+          "type": "string",
+          "readOnly": true
+        },
+        "id": {
+          "type": "integer",
+          "readOnly": true
+        },
+        "last_hit_id": {
+          "description": "Last hit ID that was exported; can be used as start_from_hit_id.",
+          "type": "integer",
+          "readOnly": true
+        },
+        "num_rows": {
+          "type": "integer",
+          "readOnly": true
+        },
+        "path": {
+          "type": "string",
+          "readOnly": true
+        },
+        "site_id": {
+          "type": "integer",
+          "readOnly": true
+        },
+        "size": {
+          "description": "File size in MB.",
+          "type": "string",
+          "readOnly": true
+        },
+        "start_from_hit_id": {
+          "description": "The hit ID this export was started from.",
+          "type": "integer"
+        }
+      }
+    },
+    "handlers.apiExportRequest": {
+      "title": "apiExportRequest",
+      "type": "object",
+      "properties": {
+        "start_from_hit_id": {
+          "description": "Pagination cursor; only export hits with an ID greater than this.",
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{{template "_backend_top.gohtml" .}}
+
+<h2>Admin</h2>
+
+<form method="post" action="/admin/{{.Stat.Site.ID}}/gh-sponsor" class="vertical">
+	<input type="hidden" name="csrf" value="{{.User.CSRFToken}}">
+	<fieldset>
+		<legend>Set plan</legend>
+
+		{{if .Stat.Site.Stripe}}
+			{{- if has_prefix .Stat.Site.Stripe "cus_github" -}}
+				<a href="https://github.com/{{substr .Stat.Site.Stripe 11 -1}}">GitHub</a>
+			{{- else if not (has_prefix .Stat.Site.Stripe "cus_free_") -}}
+				<a href="https://dashboard.stripe.com/customers/{{.Stat.Site.Stripe}}">Stripe</a>
+			{{end}}
+		{{end}}
+
+
+		{{if .Stat.Site.Parent}}
+			<p>Child of {{.Stat.Site.Parent}}</p>
+		{{else}}
+			<label for="stripe">Customer ID (GitHub: <code>cus_github_[user]</code>, free: <code>cus_free_[id]</code>)</label>
+			<input type="text" name="stripe" id="stripe" value="{{.Stat.Site.Stripe}}">
+
+			<label for="currency">Amount (USD for GitHub, EUR otherwise)</label>
+			<input type="text" name="amount" id="amount" value="{{.Stat.Site.BillingAmount}}">
+
+			<label for="plan">Plan</label>
+			<select name="plan" id="plan">
+				<option {{option_value .Stat.Site.Plan "personal"}}>personal</option>
+				<option {{option_value .Stat.Site.Plan "personalplus"}}>starter</option>
+				<option {{option_value .Stat.Site.Plan "business"}}>business</option>
+				<option {{option_value .Stat.Site.Plan "businessplus"}}>businessplus</option>
+			</select>
+			<br>
+			<button type="submit">Update</button>
+		{{end}}
+	</fieldset>
+</form>
+
+<table>
+	<tr><td>Total</td><td>{{nformat .Stat.CountTotal $.Site}}</td></tr>
+	<tr><td>Last month</td><td>{{nformat .Stat.CountLastMonth $.Site}}</td></tr>
+	<tr><td>Previous month</td><td>{{nformat .Stat.CountPrevMonth $.Site}}</td></tr>
+	<tr><td>Last data received</td><td>{{.Stat.LastData}}</td></tr>
+	{{if .Stat.Site.Parent}}
+		<tr><td>Parent</td><td><a href="/admin/{{.Stat.Site.Parent}}">/admin/{{.Stat.Site.Parent}}</a></td></tr>
+	{{end}}
+</table>
+
+<pre>{{pp .Stat.Site}}</pre>
+<pre>{{pp .Stat.User}}</pre>
+
+{{template "_backend_bottom.gohtml" .}}

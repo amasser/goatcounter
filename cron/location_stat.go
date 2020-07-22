@@ -1,104 +1,92 @@
-// Copyright © 2019 Martin Tournoij <martin@arp242.net>
-// This file is part of GoatCounter and published under the terms of the AGPLv3,
-// which can be found in the LICENSE file or at gnu.org/licenses/agpl.html
+// Copyright © 2019 Martin Tournoij – This file is part of GoatCounter and
+// published under the terms of a slightly modified EUPL v1.2 license, which can
+// be found in the LICENSE file or at https://license.goatcounter.com
 
 package cron
 
 import (
 	"context"
-	"time"
 
-	"github.com/jmoiron/sqlx"
-	"github.com/pkg/errors"
+	"zgo.at/errors"
 	"zgo.at/goatcounter"
-	"zgo.at/goatcounter/cfg"
 	"zgo.at/zdb"
 	"zgo.at/zdb/bulk"
-	"zgo.at/zhttp/ctxkey"
 )
 
-type lstat struct {
-	Location  string    `db:"location"`
-	Count     int       `db:"count"`
-	CreatedAt time.Time `db:"created_at"`
-}
+// Location stats are stored as a simple day/location with a count.
+//  site |    day     | location | count
+// ------+------------+----------+-------
+//     1 | 2019-11-30 | ET       |     1
+//     1 | 2019-11-30 | GR       |     2
+//     1 | 2019-11-30 | MX       |     4
+func updateLocationStats(ctx context.Context, hits []goatcounter.Hit) error {
+	return zdb.TX(ctx, func(ctx context.Context, tx zdb.DB) error {
+		// Group by day + location.
+		type gt struct {
+			count       int
+			countUnique int
+			day         string
+			location    string
+		}
+		grouped := map[string]gt{}
+		for _, h := range hits {
+			if h.Bot > 0 {
+				continue
+			}
 
-func updateLocationStats(ctx context.Context, site goatcounter.Site) error {
-	ctx = context.WithValue(ctx, ctxkey.Site, &site)
-	db := zdb.MustGet(ctx)
+			day := h.CreatedAt.Format("2006-01-02")
+			k := day + h.Location
+			v := grouped[k]
+			if v.count == 0 {
+				v.day = day
+				v.location = h.Location
+				var err error
+				v.count, v.countUnique, err = existingLocationStats(ctx, tx,
+					h.Site, day, v.location)
+				if err != nil {
+					return err
+				}
+			}
 
-	// Select everything since last update.
-	var last string
-	if site.LastStat == nil {
-		last = "1970-01-01"
-	} else {
-		last = site.LastStat.Format("2006-01-02")
-	}
-
-	var query string
-	if cfg.PgSQL {
-		query = `
-			select
-				location,
-				count(location) as count,
-				cast(substr(cast(created_at as varchar), 0, 14) || ':00:00' as timestamp) as created_at
-			from hits
-			where
-				site=$1 and
-				created_at>=$2
-			group by location, substr(cast(created_at as varchar), 0, 14)
-			order by count desc`
-	} else {
-		query = `
-			select
-				location,
-				count(location) as count,
-				created_at
-			from hits
-			where
-				site=$1 and
-				created_at>=$2
-			group by location, strftime('%Y-%m-%d %H', created_at)
-			order by count desc`
-	}
-
-	var stats []lstat
-	err := db.SelectContext(ctx, &stats, query, site.ID, last)
-	if err != nil {
-		return errors.Wrap(err, "fetch data")
-	}
-
-	// Remove everything we'll update; it's faster than running many updates.
-	_, err = db.ExecContext(ctx, `delete from location_stats where site=$1 and day>=$2`,
-		site.ID, last)
-	if err != nil {
-		return errors.Wrap(err, "delete")
-	}
-
-	// Group properly.
-	type gt struct {
-		count    int
-		day      string
-		location string
-	}
-	grouped := map[string]gt{}
-	for _, s := range stats {
-		k := s.CreatedAt.Format("2006-01-02") + s.Location
-		v := grouped[k]
-		if v.count == 0 {
-			v.day = s.CreatedAt.Format("2006-01-02")
-			v.location = s.Location
+			v.count += 1
+			if h.FirstVisit {
+				v.countUnique += 1
+			}
+			grouped[k] = v
 		}
 
-		v.count += s.Count
-		grouped[k] = v
+		siteID := goatcounter.MustGetSite(ctx).ID
+		ins := bulk.NewInsert(ctx, "location_stats", []string{"site", "day",
+			"location", "count", "count_unique"})
+		for _, v := range grouped {
+			ins.Values(siteID, v.day, v.location, v.count, v.countUnique)
+		}
+		return ins.Finish()
+	})
+}
+
+func existingLocationStats(
+	txctx context.Context, tx zdb.DB, siteID int64,
+	day, location string,
+) (int, int, error) {
+
+	var c []struct {
+		Count       int `db:"count"`
+		CountUnique int `db:"count_unique"`
+	}
+	err := tx.SelectContext(txctx, &c, `/* existingLocationStats */
+		select count, count_unique from location_stats
+		where site=$1 and day=$2 and location=$3 limit 1`,
+		siteID, day, location)
+	if err != nil {
+		return 0, 0, errors.Wrap(err, "select")
+	}
+	if len(c) == 0 {
+		return 0, 0, nil
 	}
 
-	insLocation := bulk.NewInsert(ctx, zdb.MustGet(ctx).(*sqlx.DB),
-		"location_stats", []string{"site", "day", "location", "count"})
-	for _, v := range grouped {
-		insLocation.Values(site.ID, v.day, v.location, v.count)
-	}
-
-	return insLocation.Finish()
+	_, err = tx.ExecContext(txctx, `delete from location_stats where
+		site=$1 and day=$2 and location=$3`,
+		siteID, day, location)
+	return c[0].Count, c[0].CountUnique, errors.Wrap(err, "delete")
 }

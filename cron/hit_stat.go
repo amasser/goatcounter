@@ -1,229 +1,119 @@
-// Copyright © 2019 Martin Tournoij <martin@arp242.net>
-// This file is part of GoatCounter and published under the terms of the AGPLv3,
-// which can be found in the LICENSE file or at gnu.org/licenses/agpl.html
+// Copyright © 2019 Martin Tournoij – This file is part of GoatCounter and
+// published under the terms of a slightly modified EUPL v1.2 license, which can
+// be found in the LICENSE file or at https://license.goatcounter.com
 
 package cron
 
 import (
 	"context"
-	"time"
+	"strconv"
 
-	"github.com/jinzhu/now"
-	"github.com/jmoiron/sqlx"
-	"github.com/pkg/errors"
+	"zgo.at/errors"
 	"zgo.at/goatcounter"
-	"zgo.at/goatcounter/cfg"
-	"zgo.at/utils/jsonutil"
-	"zgo.at/utils/sliceutil"
 	"zgo.at/zdb"
 	"zgo.at/zdb/bulk"
-	"zgo.at/zhttp/ctxkey"
+	"zgo.at/zstd/zjson"
 )
 
-type stat struct {
-	Path      string    `db:"path"`
-	Count     int       `db:"count"`
-	CreatedAt time.Time `db:"created_at"`
-}
-
-func updateHitStats(ctx context.Context, site goatcounter.Site) error {
-	ctx = context.WithValue(ctx, ctxkey.Site, &site)
-	db := zdb.MustGet(ctx)
-
-	// Select everything since last update.
-	var last string
-	if site.LastStat == nil {
-		last = "1970-01-01"
-	} else {
-		last = site.LastStat.Format("2006-01-02")
-	}
-
-	var query string
-	if cfg.PgSQL {
-		query = `
-			select
-				path,
-				count(path) as count,
-				cast(substr(cast(created_at as varchar), 0, 14) || ':00:00' as timestamp) as created_at
-			from hits
-			where
-				site=$1 and
-				created_at>=$2
-			group by path, substr(cast(created_at as varchar), 0, 14)
-			order by path, substr(cast(created_at as varchar), 0, 14)`
-	} else {
-		query = `
-			select
-				path,
-				count(path) as count,
-				created_at
-			from hits
-			where
-				site=$1 and
-				created_at>=$2
-			group by path, strftime('%Y-%m-%d %H', created_at)
-			order by path, strftime('%Y-%m-%d %H', created_at)`
-	}
-
-	var stats []stat
-	err := db.SelectContext(ctx, &stats, query, site.ID, last)
-	if err != nil {
-		return errors.Wrap(err, "fetch data")
-	}
-
-	if !site.ReceivedData && len(stats) > 0 {
-		_, err = zdb.MustGet(ctx).ExecContext(ctx,
-			`update sites set received_data=1 where id=$1`, site.ID)
-		if err != nil {
-			return errors.Wrapf(err, "update received_data: site %d", site.ID)
+// Hit stats are stored per day/path, the value is a 2-tuple: it lists the
+// counts for every hour. The first is the hour, second the number of hits in
+// that hour:
+//
+//   site       | 1
+//   day        | 2019-12-05
+//   path       | /jquery.html
+//   title      | Why I'm still using jQuery in 2019
+//   stats      | [0,0,0,0,0,0,0,0,0,0,0,4,7,0,0,0,0,0,0,0,0,0,1,0]
+func updateHitStats(ctx context.Context, hits []goatcounter.Hit) error {
+	return zdb.TX(ctx, func(ctx context.Context, tx zdb.DB) error {
+		// Group by day + path.
+		type gt struct {
+			count       []int
+			countUnique []int
+			day         string
+			hour        string
+			path        string
+			title       string
 		}
-	}
-
-	existing, err := (&goatcounter.HitStats{}).ListPaths(ctx)
-	if err != nil {
-		return err
-	}
-
-	hourly := fillHitBlanks(stats, existing, site.CreatedAt)
-
-	// No data received.
-	if len(hourly) == 0 {
-		return nil
-	}
-
-	// List all paths we already have so we can update them, rather than
-	// inserting new.
-	var have []string
-	err = db.SelectContext(ctx, &have,
-		`select path from hit_stats where site=$1`,
-		site.ID)
-	if err != nil {
-		return errors.Wrap(err, "have")
-	}
-
-	ins := bulk.NewInsert(ctx, zdb.MustGet(ctx).(*sqlx.DB),
-		"hit_stats", []string{"site", "day", "path", "stats"})
-	for path, dayst := range hourly {
-		exists := false
-		for _, h := range have {
-			if h == path {
-				exists = true
-				break
-			}
-		}
-
-		var del []string
-		for day, st := range dayst {
-			ins.Values(site.ID, day, path, jsonutil.MustMarshal(st))
-			if exists {
-				del = append(del, day)
-			}
-		}
-
-		// Delete existing.
-		if len(del) > 0 {
-			query, args, err := sqlx.In(`delete from hit_stats where
-				site=? and lower(path)=lower(?) and day in (?)`, site.ID, path, del)
-			if err != nil {
-				return errors.Wrap(err, "delete 1")
-			}
-			_, err = db.ExecContext(ctx, db.Rebind(query), args...)
-			if err != nil {
-				return errors.Wrap(err, "delete 2")
-			}
-		}
-	}
-	return ins.Finish()
-}
-
-func fillHitBlanks(stats []stat, existing []string, siteCreated time.Time) map[string]map[string][][]int {
-	// Convert data to easier structure:
-	// {
-	//   "jquery.html": map[string][][]int{
-	//     "2019-06-22": []{
-	// 	     []int{4, 50},
-	// 	     []int{6, 4},
-	// 	   },
-	// 	   "2019-06-23": []{ .. }.
-	// 	 },
-	// 	 "other.html": { .. },
-	// }
-	hourly := map[string]map[string][][]int{}
-	first := now.BeginningOfDay()
-	for _, s := range stats {
-		_, ok := hourly[s.Path]
-		if !ok {
-			hourly[s.Path] = map[string][][]int{}
-		}
-
-		if s.CreatedAt.Before(first) {
-			first = now.New(s.CreatedAt).BeginningOfDay()
-		}
-
-		day := s.CreatedAt.Format("2006-01-02")
-		hourly[s.Path][day] = append(hourly[s.Path][day],
-			[]int{s.CreatedAt.Hour(), s.Count})
-	}
-
-	// Fill in blank days.
-	n := now.BeginningOfDay()
-	alldays := []string{first.Format("2006-01-02")}
-	for first.Before(n) {
-		first = first.Add(24 * time.Hour)
-		alldays = append(alldays, first.Format("2006-01-02"))
-	}
-	allhours := make([][]int, 24)
-	for i := 0; i <= 23; i++ {
-		allhours[i] = []int{i, 0}
-	}
-	for path, days := range hourly {
-		for _, day := range alldays {
-			_, ok := days[day]
-			if !ok {
-				hourly[path][day] = allhours
-			}
-		}
-
-		// Backlog new paths since site start.
-		// TODO: would be better to modify display logic, instead of storing
-		// heaps of data we don't use.
-		if !sliceutil.InStringSlice(existing, path) {
-			ndays := int(time.Now().UTC().Sub(siteCreated) / time.Hour / 24)
-			daysSinceCreated := make([]string, ndays)
-			for i := 0; i < ndays; i++ {
-				daysSinceCreated[i] = siteCreated.Add(24 * time.Duration(i) * time.Hour).Format("2006-01-02")
-			}
-
-			for _, day := range daysSinceCreated {
-				if _, ok := hourly[path][day]; !ok {
-					hourly[path][day] = allhours
-				}
-			}
-		}
-	}
-
-	// Fill in blank hours.
-	for path, days := range hourly {
-		for dayk, day := range days {
-			if len(day) == 24 {
+		grouped := map[string]gt{}
+		for _, h := range hits {
+			if h.Bot > 0 {
 				continue
 			}
 
-			newday := make([][]int, 24)
-		outer:
-			for i, hour := range allhours {
-				for _, h := range day {
-					if h[0] == hour[0] {
-						newday[i] = h
-						continue outer
-					}
+			day := h.CreatedAt.Format("2006-01-02")
+			dayHour := h.CreatedAt.Format("2006-01-02 15:00:00")
+			k := day + h.Path
+			v := grouped[k]
+			if len(v.count) == 0 {
+				v.day = day
+				v.hour = dayHour
+				v.path = h.Path
+				var err error
+				v.count, v.countUnique, v.title, err = existingHitStats(ctx, tx,
+					h.Site, day, v.path)
+				if err != nil {
+					return err
 				}
-				newday[i] = hour
 			}
 
-			hourly[path][dayk] = newday
+			if h.Title != "" {
+				v.title = h.Title
+			}
+
+			hour, _ := strconv.ParseInt(h.CreatedAt.Format("15"), 10, 8)
+			v.count[hour] += 1
+			if h.FirstVisit {
+				v.countUnique[hour] += 1
+			}
+			grouped[k] = v
 		}
+
+		siteID := goatcounter.MustGetSite(ctx).ID
+		ins := bulk.NewInsert(ctx, "hit_stats", []string{"site", "day", "path",
+			"title", "stats", "stats_unique"})
+		for _, v := range grouped {
+			ins.Values(siteID, v.day, v.path, v.title,
+				zjson.MustMarshal(v.count),
+				zjson.MustMarshal(v.countUnique))
+		}
+		return errors.Wrap(ins.Finish(), "updateHitStats hit_stats")
+	})
+}
+
+func existingHitStats(
+	txctx context.Context, tx zdb.DB, siteID int64,
+	day, path string,
+) ([]int, []int, string, error) {
+
+	var ex []struct {
+		Stats       []byte `db:"stats"`
+		StatsUnique []byte `db:"stats_unique"`
+		Title       string `db:"title"`
+	}
+	err := tx.SelectContext(txctx, &ex, `/* existingHitStats */
+		select stats, stats_unique, title from hit_stats
+		where site=$1 and day=$2 and path=$3 limit 1`,
+		siteID, day, path)
+	if err != nil {
+		return nil, nil, "", errors.Wrap(err, "existingHitStats")
+	}
+	if len(ex) == 0 {
+		return make([]int, 24), make([]int, 24), "", nil
 	}
 
-	return hourly
+	_, err = tx.ExecContext(txctx, `delete from hit_stats where
+		site=$1 and day=$2 and path=$3`,
+		siteID, day, path)
+	if err != nil {
+		return nil, nil, "", errors.Wrap(err, "delete")
+	}
+
+	var r, ru []int
+	if ex[0].Stats != nil {
+		zjson.MustUnmarshal(ex[0].Stats, &r)
+		zjson.MustUnmarshal(ex[0].StatsUnique, &ru)
+	}
+
+	return r, ru, ex[0].Title, nil
 }

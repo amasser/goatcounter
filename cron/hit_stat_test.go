@@ -1,8 +1,8 @@
-// Copyright © 2019 Martin Tournoij <martin@arp242.net>
-// This file is part of GoatCounter and published under the terms of the AGPLv3,
-// which can be found in the LICENSE file or at gnu.org/licenses/agpl.html
+// Copyright © 2019 Martin Tournoij – This file is part of GoatCounter and
+// published under the terms of a slightly modified EUPL v1.2 license, which can
+// be found in the LICENSE file or at https://license.goatcounter.com
 
-package cron
+package cron_test
 
 import (
 	"fmt"
@@ -10,54 +10,46 @@ import (
 	"time"
 
 	"zgo.at/goatcounter"
-	"zgo.at/utils/jsonutil"
+	"zgo.at/goatcounter/gctest"
+	"zgo.at/zstd/zjson"
 )
 
 func TestHitStats(t *testing.T) {
-	ctx, clean := goatcounter.StartTest(t)
+	ctx, clean := gctest.DB(t)
 	defer clean()
 
 	site := goatcounter.MustGetSite(ctx)
 	now := time.Date(2019, 8, 31, 14, 42, 0, 0, time.UTC)
 
-	// Insert some hits.
-	goatcounter.Memstore.Append([]goatcounter.Hit{
-		{Site: site.ID, Path: "/asd", CreatedAt: now},
-		{Site: site.ID, Path: "/asd", CreatedAt: now},
-		{Site: site.ID, Path: "/zxc", CreatedAt: now},
+	gctest.StoreHits(ctx, t, []goatcounter.Hit{
+		{Site: site.ID, CreatedAt: now, Path: "/asd", Title: "aSd", FirstVisit: true},
+		{Site: site.ID, CreatedAt: now, Path: "/asd/"}, // Trailing / should be sanitized and treated identical as /asd
+		{Site: site.ID, CreatedAt: now, Path: "/zxc"},
 	}...)
-	err := goatcounter.Memstore.Persist(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = updateStats(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	var stats goatcounter.HitStats
-	total, display, more, err := stats.List(ctx, now, now, nil)
+	display, displayUnique, more, err := stats.List(ctx, now.Add(-1*time.Hour), now.Add(1*time.Hour), "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if total != 3 || display != 3 || more {
-		t.Errorf("wrong return\nwant: 3, 3, false\ngot:  %v, %v, %v", total, display, more)
+	gotT := fmt.Sprintf("%d %d %t", display, displayUnique, more)
+	wantT := "3 1 false"
+	if wantT != gotT {
+		t.Fatalf("wrong totals\ngot:  %s\nwant: %s", gotT, wantT)
 	}
-
 	if len(stats) != 2 {
-		fmt.Printf("len(stats) is not 2: %d", len(stats))
+		t.Fatalf("len(stats) is not 2: %d", len(stats))
 	}
 
-	want0 := `{"Count":2,"Max":10,"Path":"/asd","RefScheme":null,"Stats":[{"Day":"2019-08-31","Days":[[0,0],[1,0],[2,0],[3,0],[4,0],[5,0],[6,0],[7,0],[8,0],[9,0],[10,0],[11,0],[12,0],[13,0],[14,2],[15,0],[16,0],[17,0],[18,0],[19,0],[20,0],[21,0],[22,0],[23,0]]}]}`
-	got0 := string(jsonutil.MustMarshal(stats[0]))
+	want0 := `{"Count":2,"CountUnique":1,"Path":"/asd","Event":false,"Title":"aSd","RefScheme":null,"Max":2,"Stats":[{"Day":"2019-08-31","Hourly":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0],"HourlyUnique":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],"Daily":2,"DailyUnique":1}]}`
+	got0 := string(zjson.MustMarshal(stats[0]))
 	if got0 != want0 {
 		t.Errorf("first wrong\ngot:  %s\nwant: %s", got0, want0)
 	}
 
-	want1 := `{"Count":1,"Max":10,"Path":"/zxc","RefScheme":null,"Stats":[{"Day":"2019-08-31","Days":[[0,0],[1,0],[2,0],[3,0],[4,0],[5,0],[6,0],[7,0],[8,0],[9,0],[10,0],[11,0],[12,0],[13,0],[14,1],[15,0],[16,0],[17,0],[18,0],[19,0],[20,0],[21,0],[22,0],[23,0]]}]}`
-	got1 := string(jsonutil.MustMarshal(stats[1]))
+	want1 := `{"Count":1,"CountUnique":0,"Path":"/zxc","Event":false,"Title":"","RefScheme":null,"Max":1,"Stats":[{"Day":"2019-08-31","Hourly":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],"HourlyUnique":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"Daily":1,"DailyUnique":0}]}`
+	got1 := string(zjson.MustMarshal(stats[1]))
 	if got1 != want1 {
 		t.Errorf("second wrong\ngot:  %s\nwant: %s", got1, want1)
 	}

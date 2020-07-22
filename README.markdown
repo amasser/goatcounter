@@ -1,145 +1,210 @@
-[![Build Status](https://travis-ci.org/zgoat/goatcounter.svg?branch=master)](https://travis-ci.org/zgoat/goatcounter)
-[![codecov](https://codecov.io/gh/zgoat/goatcounter/branch/master/graph/badge.svg)](https://codecov.io/gh/zgoat/goatcounter)
+[![Build Status](https://travis-ci.com/zgoat/goatcounter.svg?branch=master)](https://travis-ci.com/zgoat/goatcounter)
 
-GoatCounter is a web counter.
+GoatCounter is an open source web analytics platform available as a hosted
+service (free for non-commercial use) or self-hosted app. It aims to offer easy
+to use and meaningful privacy-friendly web analytics as an alternative to Google
+Analytics or Matomo.
 
-There are two ways to run this: as **hosted service starting at $3/month**
-(*free* during initial beta!) or run it on your own server. Check out
-[https://www.goatcounter.com][www] for the hosted service and user
-documentation.
+There are two ways to run this: as **hosted service** on [goatcounter.com][www],
+*free* for non-commercial use, or run it on your own server (the source code is
+completely Open Source/Free Software, and it can be self-hosted without
+restrictions).
+
+See [docs/rationale.markdown](docs/rationale.markdown) for some more details on
+the *"why?"* of this project.
 
 There's a live demo at [https://stats.arp242.net](https://stats.arp242.net).
 
-The current status is *public beta*, or "MVP" (Minimum Viable Product) to get
-feedback from others. That being sad, it should be stable and useful. It just
-doesn't have all the features I'd like it to have (yet).
+Please consider [contributing financially][sponsor] if you're self-hosting
+GoatCounter so I can pay my rent :-)
 
-Please consider [donating][patreon] if you're self-hosting GoatCounter so I can
-pay my rent :-) Also see the [announcement post][launch].
+GoatCounter is sponsored by a grant from [NLnet's NGI Zero PET fund][nlnet].
 
----
-
-Basically I quit my day job to try and make a living from creating open source
-software full-time (or free software, if you prefer). So supporting isn't just a
-nice way to say "thanks mate", it's directly supporting future development.
+[nlnet]: https://nlnet.nl/project/GoatCounter/
+[sponsor]: http://www.goatcounter.com/contribute
+[www]: https://www.goatcounter.com
 
 Features
 --------
 
-- **Privacy-aware**; doesn't track users; doesn't need a GDPR notice.
+- **Privacy-aware**; doesn't track users with unique identifiers and doesn't
+  need a GDPR consent notice. Also see the [privacy policy][privacy].
 
-- **Lightweight** and **fast**; adds just 1KB of extra data to your site.
+- **Lightweight** and **fast**; adds just ~5K (~2.5K compressed) of extra data
+  to your site. Also has JavaScript-free "tracking pixel" option, or you can use
+  it from your application's middleware.
 
 - **Easy**; if you've been confused by the myriad of options and flexibility of
   Google Analytics and Matomo that you don't need then GoatCounter will be a
-  breath of fresh air. 
+  breath of fresh air.
+
+- Identify **unique visits** without cookies using a non-identifiable hash
+  ([technical details][sessions]).
+
+- Keeps useful statistics such as **browser** information, **location**, and
+  **screen size**. Keep track of **referring sites** and **campaigns**.
 
 - **Accessibility** is a high-priority feature, and the interface works well
-  with screen readers, no JavaScript, and even text browsers.
+  with screen readers, no JavaScript, and even text browsers (although not all
+  features work equally well without JS).
 
 - 100% committed to **open source**; you can see exactly what the code does and
   make improvements.
 
 - **Own your data**; you can always export all data and **cancel at any time**.
 
+- Integrate on your site with just a **single script tag**:
+
+      <script data-goatcounter="https://yoursite.goatcounter.com/count"
+              async src="//gc.zgo.at/count.js"></script>
+
+- The JavaScript integration is a good option for most, but you can also use a
+  **no-JavaScript image-based tracker** or integrate in your **backend
+  middleware**.
+
+[privacy]: https://www.goatcounter.com/privacy
+[sessions]: https://github.com/zgoat/goatcounter/blob/master/docs/sessions.markdown
+
 ### Technical
 
-- Fast: can handle about 800 hits/second on a $5/month Linode VPS – which is
-  also running hitch and varnish – using the default settings.
+- Fast: can handle about 800 hits/second on a $5/month Linode VPS using the
+  default settings.
 
-- Self-contained binary: everything (including static assets) is in a single 5M
-  statically compiled binary.
+- Self-contained binary: everything – including static assets – is in a single
+  ~7M statically compiled binary. The only other thing you need is a SQLite
+  database file or PostgreSQL connection (no way around that).
 
 Running your own
 ----------------
 
-Go 1.12 and newer are supported (it follows the [Go release policy][rp]). You
-will need a C compiler (for SQLite) or PostgreSQL.
+The [release page][releases] has binaries for Linux amd64, arm, and arm64. These
+are statically compiled and should work in pretty much any Linux environment.
+GoatCounter should run on any platform supported by Go, but there are no
+binaries for them (yet); you'll have to build from source for now (it's not
+hard, I promise).
 
-### Development
+Note this README is for the latest master; use the [`release-1.3`][r-1.3] branch
+for the 1.3 README.
 
-1. Install it with:
+Generally speaking only the latest release is supported, although critical fixes
+(security, data loss, etc.) may get backported to previous releases.
 
-       $ git clone git@github.com:zgoat/goatcounter.git
-       $ cd goatcounter
-       $ go build ./cmd/goatcounter
+[releases]: https://github.com/zgoat/goatcounter/releases
+[r-1.3]: https://github.com/zgoat/goatcounter/tree/release-1.3
 
-   This will put a self-contained binary at `goatcounter`. You can optionally
-   reduce the binary size a bit (from ~18M to ~5M) with `strip` and/or `upx`.
+### Building from source
 
-2. Run `./goatcounter`. This will run a development environment on
-   http://goatcounter.localhost:8081
+Compile from source with:
 
-   The default is to use a SQLite database at `./db/goatcounter.sqlite3` (will
-   be created if it doesn't exist). See the `-dbconnect` flag to customize this.
+    $ git clone -b release-1.3 https://github.com/zgoat/goatcounter.git
+    $ cd goatcounter
+    $ go build -ldflags="-X main.version=$(git log -n1 --format='%h_%cI')" ./cmd/goatcounter
 
-3. You can sign up your new site at http://www.goatcounter.localhost:8081, which
-   can then be accessed at http://[code].goatcounter.localhost:8081
+The `-ldflags=[..]` sets the version; this isn't *strictly* required as such,
+but it's recommended as it's used to "bust" the cache for static files and may
+also be useful later when reporting bugs. This can be any string and doesn't
+follow any particular format, you can also set this to the current date or
+`banana` or anything you want really.
 
-   Note: some systems require `/etc/hosts` entries `*.goatcounter.localhost`,
-   whereas others work fine without. If you can't connect try adding this:
+Or to build a statically linked binary:
 
-       127.0.0.1 www.goatcounter.localhost static.goatcounter.localhost code.goatcounter.localhost
+    $ go build -ldflags="-X main.version=$(git log -n1 --format='%h_%cI')" \
+        -tags osusergo,netgo,sqlite_omit_load_extension \
+        -ldflags='-extldflags=-static' \
+        ./cmd/goatcounter
 
-### Production
+You'll now have a `goatcounter` binary in the current directory.
 
-1. For a production environment run something like:
+You need Go 1.13 or newer and a C compiler (for SQLite), or compile it with
+`CGO_ENABLED=0 go build` and use PostgreSQL.
 
-       goatcounter \
-           -prod \
-           -domain "goatcounter.com" \
-           -domainstatic "static.goatcounter.com" \
-           -smtp "smtp://localhost:25" \
-           -emailerrors 'me@example.com' \
-           "$@"
+It's recommended to use the latest release as in the above command. The master
+branch should be reasonably stable but no guarantees, and sometimes I don't
+write detailed release/upgrade notes until the actual release.
 
-2. Use a proxy for https (e.g. [hitch][hitch] or [caddy][caddy]); you'll need to
-   forward `example.com` and `*.example.com`
+It's not recommended to use `go get` in GOPATH mode since that will ignore the
+dependency versions in go.mod.
 
-You can see the [goathost repo][goathost] for the server configuration of
-goatcounter.com, although that is just one way of running it.
+### Running
+
+You can start a server with:
+
+    $ goatcounter serve
+
+The default is to use a SQLite database at `./db/goatcounter.sqlite3`, which
+will be created if it doesn't exist yet. See the `-db` flag and
+`goatcounter help db` to customize this.
+
+GoatCounter will listens on port `*:80` and `*:443` by default. You don't need
+to run it as root and can grant the appropriate permissions on Linux with:
+
+    $ setcap 'cap_net_bind_service=+ep' goatcounter
+
+Listening on a different port can be a bit tricky due to the ACME/Let's Encrypt
+certificate generation; `goatcounter help listen` documents this in depth.
+
+You can create new sites with the `create` command:
+
+    $ goatcounter create -email me@example.com -domain stats.example.com
+
+This will ask for a password for your new account; you can also add a password
+on the commandline with `-password`. If you use a custom DB, you must also pass
+the `-db` flag here.
 
 ### Updating
 
-1. `git pull` and build a new version as per above.
+You may need to run run database migrations when updating. Use  `goatcounter
+-automigrate` to always run all pending migrations on startup. This is the
+easiest way, although arguably not the "best" way.
 
-2. Database migrations are *not* run automatically, but the app will warn on
-   startup if there are migrations that need to be run.
+Use `goatcounter migrate <file>` or `goatcounter migrate all` to manually run
+migrations; generally you want to upload the new version, run migrations while
+the old one is still running, and then restart so the new version takes effect.
 
-3. Run migrations from `db/migrate/<engine>` with the `sqlite` or `psql`
-   commandline tool.
+Use `goatcounter migrate show` to get a list of pending migrations.
 
 ### PostgreSQL
 
 Both SQLite and PostgreSQL are supported. SQLite should work well for the vast
 majority of people and is the recommended database engine. PostgreSQL will not
 be faster in most cases, and the chief reason for adding support in the first
-place is to support load balancing web requests over multiple servers.
+place is to support load balancing web requests over multiple servers. To use
+it:
 
-To use it:
-
-1. Create the database, unlike SQLite it's not done automatically:
+1. Create the database, unlike SQLite it's not done automatically (you may need
+   to modify the `-db` flag):
 
        $ createdb goatcounter
        $ psql goatcounter -c '\i db/schema.pgsql'
+       $ goatcounter -db 'postgresql://dbname=goatcounter' migrate all
 
-2. Optionally convert the SQLite database:
+2. Run with custom `-db` flag:
 
-       $ ./db/export-sqlite.sh ./db/goatcounter.sqlite3 | psql goatcounter
-
-3. Run with `-pgsql` and `-dbconnect`, for example:
-
-       $ goatcounter -pgsql -dbconnect 'user=goatcounter dbname=goatcounter sslmode=disable'
+       $ goatcounter serve \
+           -db 'postgresql://user=goatcounter dbname=goatcounter sslmode=disable'
 
    See the [pq docs][pq] for more details on the connection string.
 
+3. You can compile goatcounter without cgo if you don't use SQLite:
 
-[www]: https://www.goatcounter.com
-[privacy]: https://goatcounter.com/privacy
+       $ CGO_ENABLED=0 go build -ldflags="-X main.version=$(git log -n1 --format='%h_%cI')" ./cmd/goatcounter
+
+   Functionally it doesn't matter too much, but builds will be a bit easier and
+   faster as it won't require a C compiler.
+
 [pq]: https://godoc.org/github.com/lib/pq
-[goathost]: https://github.com/zgoat/goathost
-[patreon]: https://www.patreon.com/arp242
-[launch]: https://arp242.net/goatcounter.html
-[rp]: https://golang.org/doc/devel/release.html#policy
-[hitch]: https://github.com/varnish/hitch
-[caddy]: https://caddyserver.com/
+
+### Development/testing
+
+You can start a test/development server with:
+
+    $ goatcounter serve -dev
+
+The `-dev` flag makes some small things a bit more convenient for development;
+TLS is disabled by default, it will listen on localhost:8081, the application
+will automatically restart on recompiles, and a few other minor changes.
+
+See [.github/CONTRIBUTING.markdown](/.github/CONTRIBUTING.markdown) for more
+details on how to run a development server, write patches, etc.
+
+Various aggregate data files are available at https://www.goatcounter.com/data

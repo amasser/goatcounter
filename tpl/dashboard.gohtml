@@ -1,0 +1,108 @@
+{{- template "_backend_top.gohtml" . -}}
+
+{{if .User.ID}}
+	{{if not .User.EmailVerified}}
+		<div class="flash flash-i">
+			Please verify your email by clicking the link sent to {{.User.Email}}.
+			<sup>(<a href="https://www.goatcounter.com/help#verify-email" target="_blank">Why?</a>)</sup><br>
+
+			Change the email address in the <a href="/settings">settings</a> –
+			<form method="post" action="/user/resend-verify">
+				<button class="link">Resend email</button>.
+			</form>
+		</div>
+	{{end}}
+
+	{{if not .Site.ReceivedData}}
+		<div class="flash flash-i">
+			<p><strong>No data received</strong> – GoatCounter hasn’t received any
+			data yet.<br>
+			Make sure the site is set up correctly with the code below inserted in
+			your page, ideally just before the closing &lt;/body&gt; tag (but
+			anywhere will work):</p>
+			{{template "_backend_sitecode.gohtml" .}}
+
+			<p><small>This message will disappear once we receive data; see
+				<a href="/code">Site code</a> in the top menu for further
+				documentation and ready-made integrations.</small></p>
+		</div>
+	{{end}}
+{{end}} {{/* .User.ID */}}
+
+<form id="dash-form">
+	{{/* The first button gets used on the enter key, AFAICT there is no way to change that. */}}
+	<button type="submit" tabindex="-1" class="hide-btn" aria-label="Submit"></button>
+	{{if .ShowRefs}}<input type="hidden" name="showrefs" value="{{.ShowRefs}}">{{end}}
+	<input type="hidden" id="hl-period" name="hl-period" disabled>
+
+	{{/*
+	<div id="dash-saved-views">
+		Saved views: <a href="#">404</a> · <a href="#">blog</a>
+		| <a href="#">Save current view</a>
+	</div>
+	*/}}
+	<div id="dash-main">
+		<div>
+			<span>
+				<input type="text" class="date-input" autocomplete="off" title="Start of date range to display" id="period-start" name="period-start" value="{{tformat .Site .PeriodStart ""}}">–{{- "" -}}
+				<input type="text" class="date-input" autocomplete="off" title="End of date range to display"   id="period-end"   name="period-end" value="{{tformat .Site .PeriodEnd ""}}">{{- "" -}}
+			</span>
+			<span id="dash-select-period" class="period-{{.SelectedPeriod}}">
+				<span>
+					Last
+					<button class="link" name="period" value="day">day</button> ·
+					<button class="link" name="period" value="week">week</button> ·
+					<button class="link" name="period" value="month">month</button> ·
+					<button class="link" name="period" value="quarter">quarter</button> ·
+					<button class="link" name="period" value="half-year">half year</button> ·
+					<button class="link" name="period" value="year">year</button>
+				</span>
+
+				<span>
+					Current
+					<button class="link" name="period" value="week-cur">week</button> ·
+					<button class="link" name="period" value="month-cur">month</button>
+				</span>
+			</span>
+		</div>
+
+		<div>
+			<div class="filter-wrap">
+				<input
+					type="text" autocomplete="off" name="filter" value="{{.Filter}}" id="filter-paths"
+					placeholder="Filter paths" title="Filter the list of paths; matched case-insensitive on path and title"
+					{{if .Filter}}class="value"{{end}}>
+			</div>
+			{{if .ForcedDaily}}
+				<label title="Cannot use the hourly view for a time range of more than 90 days"><input type="checkbox" name="daily" checked disabled> View by day</label>
+			{{else}}
+				<label><input type="checkbox" name="daily" id="daily" {{if .Daily}}checked{{end}}> View by day</label>
+			{{end}}
+		</div>
+	</div>
+	<div id="dash-move">
+		<div>
+			←&#xfe0e; back
+			<button class="link" name="move" value="week-b">week</button> ·
+			<button class="link" name="move" value="month-b">month</button>
+		</div>
+		<div>
+			<button class="link" name="move" value="week-f">week</button> ·
+			<button class="link" name="move" value="month-f">month</button>
+			forward →&#xfe0e;
+		</div>
+	</div>
+</form>
+
+{{$div := false}}
+{{range $w := .Widgets}}
+	{{if and (eq $w.Type "hchart") (not $div)}}
+		{{$div = true}}
+		<div class="hcharts">
+	{{end}}
+	{{if and (ne $w.Type "hchart") $div}}</div>{{end}}
+	{{$w.HTML}}
+{{end}}
+{{if $div}}</div>{{end}}
+
+{{- template "_backend_bottom.gohtml" . }}

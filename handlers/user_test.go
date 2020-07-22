@@ -1,23 +1,30 @@
+// Copyright © 2019 Martin Tournoij – This file is part of GoatCounter and
+// published under the terms of a slightly modified EUPL v1.2 license, which can
+// be found in the LICENSE file or at https://license.goatcounter.com
+
 package handlers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"zgo.at/goatcounter"
-	"zgo.at/zdb"
-	"zgo.at/zhttp"
 )
 
 func TestUserNew(t *testing.T) {
 	tests := []handlerTest{
 		{
-			name:         "basic",
-			router:       NewBackend,
+			name:   "basic",
+			router: newBackend,
+			setup: func(ctx context.Context, t *testing.T) {
+				u := goatcounter.User{Site: 1, Email: "user_test@example.com", Password: []byte("coconuts")}
+				err := u.Insert(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+			},
 			path:         "/user/new",
 			wantCode:     200,
 			wantFormCode: 200,
@@ -29,84 +36,8 @@ func TestUserNew(t *testing.T) {
 	}
 }
 
-func TestUserRequestLogin(t *testing.T) {
-	tests := []handlerTest{
-		{
-			name: "basic",
-			setup: func(ctx context.Context) {
-				user := goatcounter.User{Site: 1, Name: "new site", Email: "new@example.com"}
-				err := user.Insert(ctx)
-				if err != nil {
-					panic(err)
-				}
-			},
-			router:       NewBackend,
-			method:       "POST",
-			path:         "/user/requestlogin",
-			body:         map[string]string{"email": "new@example.com"},
-			wantCode:     303,
-			wantFormCode: 303,
-		},
-		{
-			name:         "nonexistent",
-			router:       NewBackend,
-			method:       "POST",
-			path:         "/user/requestlogin",
-			body:         map[string]string{"email": "nonexistent@example.com"},
-			wantCode:     303,
-			wantFormCode: 303,
-		},
-	}
-
-	for _, tt := range tests {
-		runTest(t, tt, func(t *testing.T, rr *httptest.ResponseRecorder, r *http.Request) {
-			msg := fmt.Sprintf("%v", zhttp.ReadFlash(rr, r))
-			var want string
-			if tt.name == "basic" {
-				want = `&{i All good. Login URL emailed to "new@example.com"; please click it in the next 15 minutes to continue.`
-			} else {
-				want = `&{e Not an account on this site: "nonexistent@example.com"}`
-			}
-
-			if !strings.HasPrefix(msg, want) {
-				t.Errorf("wrong flash\nwant: %q\nout:  %q", want, msg)
-			}
-		})
-	}
-}
-
 func TestUserLogin(t *testing.T) {
-	tests := []handlerTest{
-		{
-			name: "basic",
-			setup: func(ctx context.Context) {
-				user := goatcounter.User{Site: 1, Name: "new site", Email: "new@example.com"}
-				err := user.Insert(ctx)
-				if err != nil {
-					panic(err)
-				}
-
-				_, err = zdb.MustGet(ctx).ExecContext(ctx, `update users set
-					login_request='asdf', login_at=current_timestamp
-					where id=$2 and site=1`, user.ID)
-				if err != nil {
-					panic(err)
-				}
-			},
-			router:       NewBackend,
-			path:         "/user/login/asdf",
-			wantCode:     303,
-			wantFormCode: 303,
-		},
-
-		{
-			name:         "nonexistent",
-			router:       NewBackend,
-			path:         "/user/login/nonexistent",
-			wantCode:     403,
-			wantFormCode: 403,
-		},
-	}
+	tests := []handlerTest{}
 
 	for _, tt := range tests {
 		runTest(t, tt, func(t *testing.T, rr *httptest.ResponseRecorder, r *http.Request) {
@@ -116,12 +47,11 @@ func TestUserLogin(t *testing.T) {
 }
 
 func TestUserLogout(t *testing.T) {
-	t.Skip() // TODO
 	tests := []handlerTest{
 		{
 			name:         "basic",
 			method:       "POST",
-			router:       NewBackend,
+			router:       newBackend,
 			path:         "/user/logout",
 			auth:         true,
 			wantCode:     303,
@@ -131,7 +61,7 @@ func TestUserLogout(t *testing.T) {
 
 	for _, tt := range tests {
 		runTest(t, tt, func(t *testing.T, rr *httptest.ResponseRecorder, r *http.Request) {
-			// TODO: ensure we're actually logged in.
+			// TODO: ensure we're actually logged out.
 		})
 	}
 }

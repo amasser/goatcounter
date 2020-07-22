@@ -1,87 +1,69 @@
 {{template "_top.gohtml" .}}
 
-{{if eq .Plan "e"}}
-	<p>Please email <a href="mailto:support@goatcounter.com">support@goatcounter.com</a>
-	if you’re interested in the Enterprise plan to discus your needs.</p>
-
-	<p><a href="/#pricing">Choose a different plan</a>.</p>
-{{else}}
 <h1>Sign up for GoatCounter</h1>
-<p>
-<br>The GoatCounter.com service is free during the initial beta for testing and
-gathering feedback, but will be <u>$3 per month</u> afterwards. The initial beta
-is expected to last about three months.</p>
+
+<p>The first 14 days are always free, after that <a href="/terms#commercial">commercial</a> users must purchase a plan.</p>
+
+<p>You can use an account on any number of sites/domains; see <em>Settings</em>
+→ <em>Additional sites</em> for separating them out.</p>
 
 <div id="signup-form">
-	<form class="vertical" method="post" action="/signup/{{.PlanName}}">
+	<form class="vertical" method="post" action="/signup">
 		<fieldset class="two">
 			<div>
-				<label for="name">Site name</label>
-				<input type="text" name="site_name" id="name" maxlength="255" value="{{.Site.Name}}">
-				{{validate "site.name" .Validate}}
-				<span class="help">Your site’s name, e.g. <em>example.com</em> or <em>Example Inc.</em></span>
-			</div>
+				<div>
+					<label for="code">Code</label>
+					<input type="text" name="site_code" id="code" maxlength="50" value="{{.Site.Code}}">
+					{{validate "site.code" .Validate}}
+					<span class="help">You will access your account at https://<em>[my-code]</em>.{{.Domain}}.</span>
+				</div>
+				<div>
+					<label for="link_domain">Site domain</label>
+					<input type="text" name="link_domain" id="link_domain" maxlength="255" value="{{.Site.LinkDomain}}">
+					{{validate "site.link_domain" .Validate}}
+					<span class="help">Your site’s domain, used for display/linlking; optional.</em></span>
+				</div>
 
-			<div>
-				<label for="code">Code</label>
-				<input type="text" name="site_code" id="code" maxlength="50" value="{{.Site.Code}}">
-				{{validate "site.code" .Validate}}
-				<span class="help">You will access your account at https://<em>[my_code]</em>.{{.Domain}}.</span>
-			</div>
-		</fieldset>
-
-		<fieldset class="two">
-			<div>
-				<label for="user_name">Your name</label>
-				<input type="text" name="user_name" id="user_name" value="{{.User.Name}}">
-				{{validate "user.name" .Validate}}
-			</div>
-			<div>
-				<label for="email">Email address</label>
-				<input type="email" name="user_email" id="email" value="{{.User.Email}}">
-				{{validate "user.email" .Validate}}
-				<span class="help">You will need access to the inbox to sign in.</span>
 			</div>
 		</fieldset>
 
 		<fieldset class="two">
 			<div>
-				<label for="turing_test">Fill in 9 here</label>
-				<input type="text" name="turing_test" id="turing_test" value="{{.TuringTest}}">
-				{{validate "turing_test" .Validate}}
-				<span class="help">Just a little verification that you’re human :-)</span>
+				<div>
+					<label for="email">Email address</label>
+					<input type="email" name="user_email" id="email" value="{{.User.Email}}">
+					{{validate "user.email" .Validate}}
+					<span class="help">For password resets, important announcements, invoices.</span>
+				</div>
+				<div>
+					<label for="password">Password</label>
+					<input type="password" name="password" id="password" value="" autocomplete="new-password">
+					{{validate "user.password" .Validate}}
+					<span class="help">Needs at least 8 characters.</span>
+				</div>
 			</div>
 		</fieldset>
 
-		{{/*
-		<fieldset class="cc">
-			<p id="signup-intro">
-				Sign up for the {{.PlanName}} plan. You will be billed
-				${{if eq .Plan "p"}}3{{else}}20{{end}} every month, cancellable every
-				month.
-				<a href="/#pricing">Choose a different plan</a>.
-			</p>
-
-			<div class="cc">
-				<label for="card">Card number</label>
-				<input type="text" name="card" id="card">
-			</div>
-
-			<div class="exp">
-				<label for="exp">Expiry</label>
-				<input type="text" name="exp" id="exp">
-			</div>
-
-			<div class="cvc">
-				<label for="cvc">CVC</label>
-				<input type="text" name="cvc" id="cvc">
+		<fieldset class="two">
+			<div>
+				<div>
+					<label for="turing_test">Fill in 9 here</label>
+					<input type="text" name="turing_test" id="turing_test" value="{{.TuringTest}}">
+					{{validate "turing_test" .Validate}}
+					<span class="help">Just a little verification that you’re human :-)</span>
+				</div>
 			</div>
 		</fieldset>
-		*/}}
 
+		<input type="hidden" name="timezone" id="timezone">
 		<button type="submit">Sign up</button>
 	</form>
+
+	{{if has_errors .Validate}}
+		<div class="flash flash-e"
+				style="position: fixed; bottom: 0; right: 0; min-width: 20em; z-index: 5; text-align: left;">
+		Additional errors:{{.Validate.HTML}}</div>
+	{{end}}
 </div>
-{{end}}
 
 {{template "_bottom.gohtml" .}}
